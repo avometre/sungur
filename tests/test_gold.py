@@ -77,3 +77,37 @@ def test_partition_dev_test_sayfa_ort_skor():
         assert "sayfa_ort_skor" in record
         assert record["sayfa_ort_skor"] == 0.85
         assert "latin_sade" in record
+        assert record["uslup"] == "birebir"
+
+
+def test_partition_dev_test_uslup_mapping_and_validation():
+    """page_style_map üzerinden üslup atamasını ve eksik sayfa durumunda ValueError fırlatılmasını sınar."""
+    sample_records = [
+        {
+            "arap": "\u0633\u0644\u0627\u0645 1",
+            "latin": "selam 1",
+            "pageid": 101,
+            "skor": 0.85,
+            "tr_baslik": "Birebir Sayfa",
+        },
+        {
+            "arap": "\u0633\u0644\u0627\u0645 2",
+            "latin": "selam 2",
+            "pageid": 202,
+            "skor": 0.90,
+            "tr_baslik": "Serbest Sayfa",
+        },
+    ]
+
+    style_map = {101: "birebir", 202: "serbest"}
+    dev, test = partition_dev_test(sample_records, page_style_map=style_map)
+    combined = dev + test
+    assert len(combined) == 2
+    r_map = {r["pageid"]: r["uslup"] for r in combined}
+    assert r_map[101] == "birebir"
+    assert r_map[202] == "serbest"
+
+    # Eksik pageid -> ValueError
+    incomplete_map = {101: "birebir"}
+    with pytest.raises(ValueError, match="Eşleşmeyen sayfa kimliği: 202"):
+        partition_dev_test(sample_records, page_style_map=incomplete_map)

@@ -8,9 +8,12 @@ import pytest
 from src.scrapers.latoc import (
     compute_latoc_stats,
     convert_xml_to_sentences,
+    disallowed_char_ratio,
     filter_sentence_words,
+    is_valid_ijmes_sentence,
     parse_exclusion_file,
-    process_layout_to_xml,
+    strip_footnote_numbers,
+    strip_verse_markers,
 )
 
 
@@ -39,6 +42,42 @@ def test_filter_sentence_words():
     assert cnt == 81
 
 
+def test_strip_footnote_numbers():
+    """Harfe yapışık dipnot numaralarının silinmesini, bağımsız sayılara dokunulmamasını sınar."""
+    # Harfe yapışık rakamlar
+    assert strip_footnote_numbers("mümtenièdür1079") == "mümtenièdür"
+    assert strip_footnote_numbers("kelime12") == "kelime"
+    assert strip_footnote_numbers("kelime12, diğer kelime") == "kelime, diğer kelime"
+    assert strip_footnote_numbers("son sözdür4.") == "son sözdür."
+
+    # Bağımsız sayılar (korunmalı)
+    assert strip_footnote_numbers("1079 yılında doğdu") == "1079 yılında doğdu"
+    assert strip_footnote_numbers("sayfa 25 ve 30") == "sayfa 25 ve 30"
+    assert strip_footnote_numbers("yıl 1920 sonu") == "yıl 1920 sonu"
+
+
+def test_strip_verse_markers():
+    """Mısra işaretleri (S1, S2, s1, s2) ve mısra ayracı ' / ' temizliğini sınar."""
+    assert strip_verse_markers("Ahval-i alem S1 devran / mısra s2 bitti") == "Ahval-i alem devran mısra bitti"
+    assert strip_verse_markers("ilk mısra / ikinci mısra") == "ilk mısra ikinci mısra"
+    assert strip_verse_markers("S2 mısra başı") == "mısra başı"
+    assert strip_verse_markers("kelime s1") == "kelime"
+
+
+def test_disallowed_char_ratio_and_ijmes_validation():
+    """IJMES izinli karakter kümesi ve oran denetimini sınar."""
+    # Tam geçerli IJMES metni
+    valid_text = "Sulṭān-ı bahr ü berr olan şāhenşāh-ı cihan ʿālem-i ḫākīyi s̱enā eyledi."
+    assert disallowed_char_ratio(valid_text) == 0.0
+    assert is_valid_ijmes_sentence(valid_text, max_disallowed_ratio=0.02) is True
+
+    # Eski font kodlamasından bozuk karakterler içeren metin (ù, À, ã, ÿ vb.)
+    corrupt_text = "SulùÀn-ı bahr ü berr olan òuãÿãda èÀlem-i devran."
+    ratio = disallowed_char_ratio(corrupt_text)
+    assert ratio > 0.05
+    assert is_valid_ijmes_sentence(corrupt_text, max_disallowed_ratio=0.02) is False
+
+
 def test_parse_exclusion_file():
     """exclude_pages.txt formatındaki sayfa sınırlarının ayrıştırılmasını sınar."""
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
@@ -57,7 +96,7 @@ def test_parse_exclusion_file():
 
 
 def test_convert_xml_to_sentences_and_normalization():
-    """XML içeriğinden cümle ayıklama, transkripsiyon sadeleştirme ve alan formatlarını sınar."""
+    """XML içeriğinden cümle ayıklama, alan formatları, donem ve uslup etiketlerini sınar."""
     xml_content = """<?xml version="1.0" encoding="UTF-8"?>
 <document source="ornek.xml" total_pages="1">
   <page number="1">
@@ -93,6 +132,8 @@ def test_convert_xml_to_sentences_and_normalization():
         assert first["kitap_id"] == "b001"
         assert first["id"].startswith("latoc:b001:")
         assert first["yuzyil"] == "15"
+        assert first["donem"] == 15
+        assert first["uslup"] == "ijmes"
         assert "latin" in first
         assert "latin_sade" in first
         # latin_sade transkripsiyon işaretlerini sadeleştirmiş olmalı (şapkalı â -> a)

@@ -24,6 +24,7 @@ data/**
 !data/**/
 !data/**/.gitkeep
 !data/gold/ws_title_map.csv
+!data/gold/page_style.csv
 !data/gold/README.md
 
 models/**

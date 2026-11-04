@@ -9,11 +9,12 @@ Ayrıca model eğitiminde veri sızıntısını önlemek için `heldout_pages.tx
 """
 
 import argparse
+import csv
 import hashlib
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.common.io import read_jsonl, write_jsonl
 from src.common.normalize import normalize_latin
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARALLEL_PATH = Path("data/interim/ws_parallel.jsonl")
 DEFAULT_GOLD_DIR = Path("data/gold")
+DEFAULT_PAGE_STYLE_PATH = Path("data/gold/page_style.csv")
 DEFAULT_MIN_SCORE = 0.75
 
 README_CONTENT = """# Osmanlıca → Türkçe Çeviriyazı Altın Değerlendirme Seti (Gold Set)
@@ -41,6 +43,12 @@ içeren yüksek kaliteli ve filtrelenmiş altın değerlendirme setini barındı
 3. `heldout_pages.txt`: Değerlendirme setinde yer alan tüm sayfa kimlikleri (`pageid`).
 4. `heldout_arap.txt`: Değerlendirme setinde yer alan tüm Arapça satır metinleri.
 5. `ws_title_map.csv`: Sayfa başlıkları eşleme ve aday arama takip tablosu.
+6. `page_style.csv`: Sayfa bazında üslup ve çeviri karakteri tablosu (birebir vs. serbest).
+
+## Üslup Ayrımı (birebir vs. serbest)
+Altın setteki sayfalar kaynak metnin ve çevirinin doğasına göre iki gruba ayrılmıştır:
+- `birebir`: Harfi harfine veya mısrası mısrasına tam uyuşan klasik metinler (şiirler, kanunlar, fermanlar vb.).
+- `serbest`: Günümüz Türkçesine sadeleştirilmiş baskılardan alınan metinler (ör. Ömer Seyfettin hikâyeleri). Bu metinlerde "صاحیدن" (sahiden) yerine "gerçekten" gibi kelime değişiklikleri bulunabilir. Model değerlendirmesinde CER/WER/chrF skorları bu iki grupta ayrı olarak da ölçülür.
 
 ## KESİNLİKLE EĞİTİMDE KULLANILMAZ (VERİ SIZINTISI KORUMASI)
 > [!IMPORTANT]
@@ -48,6 +56,26 @@ içeren yüksek kaliteli ve filtrelenmiş altın değerlendirme setini barındı
 > `src/gold/leakage.py` modülü aracılığıyla sonraki tüm eğitim verisi üretim boru hatlarında
 > bu verilerin eğitime karışması engellenmektedir.
 """
+
+
+def load_page_style_map(page_style_path: Path = DEFAULT_PAGE_STYLE_PATH) -> Dict[int, str]:
+    """page_style.csv dosyasından sayfa kimliği -> üslup (birebir|serbest) eşlemesini yükler."""
+    if not page_style_path.exists():
+        raise FileNotFoundError(f"page_style.csv dosyası bulunamadı: {page_style_path}")
+
+    style_map: Dict[int, str] = {}
+    with open(page_style_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pid_raw = row.get("pageid", "").strip()
+            if not pid_raw:
+                continue
+            pid = int(pid_raw)
+            uslup = row.get("uslup", "").strip()
+            if not uslup:
+                raise ValueError(f"Geçersiz veya boş üslup: pageid={pid}")
+            style_map[pid] = uslup
+    return style_map
 
 
 def is_reliable_pair(
@@ -82,11 +110,13 @@ def partition_dev_test(
     records: List[Dict[str, Any]],
     dev_ratio: float = 0.3,
     page_avg_scores: Dict[int, float] = None,
+    page_style_map: Optional[Dict[int, str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Güvenilir ve tekrarsız çiftleri sayfa bazında deterministik SHA-1 ile dev ve test olarak ayırır.
 
     Aynı sayfanın satırları yalnızca tek bir bölmede yer alır.
-    Her kayda 'sayfa_ort_skor' eklenir.
+    Her kayda 'sayfa_ort_skor' ve 'uslup' (birebir|serbest) eklenir.
+    Eğer sayfaya ait üslup page_style_map içinde bulunamazsa ValueError fırlatır.
     """
     if page_avg_scores is None:
         page_avg_scores = {}
@@ -101,6 +131,16 @@ def partition_dev_test(
         pid = int(r["pageid"])
         sira = page_sira.get(pid, 0)
         page_sira[pid] = sira + 1
+
+        # Üslup denetimi
+        if page_style_map is not None:
+            if pid not in page_style_map:
+                raise ValueError(
+                    f"Eşleşmeyen sayfa kimliği: {pid} (page_style.csv içinde bulunamadı)"
+                )
+            uslup = page_style_map[pid]
+        else:
+            uslup = r.get("uslup", "birebir")
 
         # Deterministik SHA-1 karması
         h = int(hashlib.sha1(str(pid).encode("utf-8")).hexdigest(), 16) % 100
@@ -123,6 +163,7 @@ def partition_dev_test(
             "skor": r.get("skor", 1.0),
             "sayfa_ort_skor": sayfa_ort,
             "bolum": bolum,
+            "uslup": uslup,
         }
 
         if bolum == "dev":
@@ -136,6 +177,7 @@ def partition_dev_test(
 def build_gold_dataset(
     parallel_path: Path = DEFAULT_PARALLEL_PATH,
     gold_dir: Path = DEFAULT_GOLD_DIR,
+    page_style_path: Optional[Path] = None,
     dev_ratio: float = 0.3,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> Dict[str, Any]:
@@ -144,6 +186,12 @@ def build_gold_dataset(
         raise FileNotFoundError(f"Paralel veri dosyası bulunamadı: {parallel_path}")
 
     gold_dir.mkdir(parents=True, exist_ok=True)
+
+    if page_style_path is None:
+        page_style_path = gold_dir / "page_style.csv"
+
+    # Üslup haritasını yükle
+    style_map = load_page_style_map(page_style_path)
 
     # 1. Ham veriyi oku
     all_raw = list(read_jsonl(parallel_path))
@@ -182,11 +230,12 @@ def build_gold_dataset(
         for pid, scores in page_scores_map.items()
     }
 
-    # 4. Dev ve Test olarak ayır
+    # 4. Dev ve Test olarak ayır (üslup eşlemesiyle)
     dev_records, test_records = partition_dev_test(
         deduped_pairs,
         dev_ratio=dev_ratio,
         page_avg_scores=page_avg_scores,
+        page_style_map=style_map,
     )
 
     # 5. Dosyaları yaz
@@ -196,7 +245,6 @@ def build_gold_dataset(
     write_jsonl(test_path, test_records)
 
     # 6. Heldout listelerini yaz
-    # heldout_pages.txt değişmesin (eski sayfaları koru veya mevcut sayfaları ekle)
     current_pids = {r["pageid"] for r in (dev_records + test_records)}
     final_heldout_pids = sorted(list(old_heldout_pids.union(current_pids)))
 
@@ -216,6 +264,10 @@ def build_gold_dataset(
     dev_pids = {r["pageid"] for r in dev_records}
     test_pids = {r["pageid"] for r in test_records}
 
+    all_gold = dev_records + test_records
+    birebir_ciftler = [r for r in all_gold if r.get("uslup") == "birebir"]
+    serbest_ciftler = [r for r in all_gold if r.get("uslup") == "serbest"]
+
     summary = {
         "toplam_paralel_kayit": len(all_raw),
         "filtrelenen_kayit": len(filtered_pairs),
@@ -229,6 +281,14 @@ def build_gold_dataset(
         "dev_cift_orani": (len(dev_records) / len(deduped_pairs)) if deduped_pairs else 0.0,
         "test_cift_orani": (len(test_records) / len(deduped_pairs)) if deduped_pairs else 0.0,
         "min_score": min_score,
+        "birebir_sayfa_sayisi": len({r["pageid"] for r in birebir_ciftler}),
+        "birebir_cift_sayisi": len(birebir_ciftler),
+        "serbest_sayfa_sayisi": len({r["pageid"] for r in serbest_ciftler}),
+        "serbest_cift_sayisi": len(serbest_ciftler),
+        "dev_birebir_cift": sum(1 for r in dev_records if r.get("uslup") == "birebir"),
+        "dev_serbest_cift": sum(1 for r in dev_records if r.get("uslup") == "serbest"),
+        "test_birebir_cift": sum(1 for r in test_records if r.get("uslup") == "birebir"),
+        "test_serbest_cift": sum(1 for r in test_records if r.get("uslup") == "serbest"),
     }
     return summary
 
@@ -257,6 +317,12 @@ def main() -> None:
         help="Geliştirme (dev) oranı (varsayılan: 0.3)",
     )
     parser.add_argument(
+        "--page-style-file",
+        type=Path,
+        default=DEFAULT_PAGE_STYLE_PATH,
+        help="Sayfa üslup eşleme dosyası (varsayılan: data/gold/page_style.csv)",
+    )
+    parser.add_argument(
         "--min-score",
         type=float,
         default=DEFAULT_MIN_SCORE,
@@ -271,6 +337,7 @@ def main() -> None:
     summary = build_gold_dataset(
         parallel_path=args.parallel_file,
         gold_dir=args.gold_dir,
+        page_style_path=args.page_style_file,
         dev_ratio=args.dev_ratio,
         min_score=args.min_score,
     )
@@ -286,8 +353,23 @@ def main() -> None:
         f"Geliştirme (Dev) Seti        : {summary['dev_sayfa_sayisi']} sayfa, {summary['dev_cift_sayisi']} çift (%{summary['dev_cift_orani']*100:.1f})"
     )
     print(
+        f"  - Birebir Çift             : {summary['dev_birebir_cift']}"
+    )
+    print(
+        f"  - Serbest Çift             : {summary['dev_serbest_cift']}"
+    )
+    print(
         f"Test Seti                    : {summary['test_sayfa_sayisi']} sayfa, {summary['test_cift_sayisi']} çift (%{summary['test_cift_orani']*100:.1f})"
     )
+    print(
+        f"  - Birebir Çift             : {summary['test_birebir_cift']}"
+    )
+    print(
+        f"  - Serbest Çift             : {summary['test_serbest_cift']}"
+    )
+    print("-" * 80)
+    print(f"Toplam Birebir               : {summary['birebir_sayfa_sayisi']} sayfa, {summary['birebir_cift_sayisi']} çift")
+    print(f"Toplam Serbest               : {summary['serbest_sayfa_sayisi']} sayfa, {summary['serbest_cift_sayisi']} çift")
     print("-" * 80)
     print("Üretilen Dosyalar:")
     print("  - data/gold/translit_dev.jsonl")

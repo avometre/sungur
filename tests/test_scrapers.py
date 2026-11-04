@@ -29,6 +29,22 @@ class TestWiktionaryScraper:
         assert parsed["koken"] is not None and "Proto-Turkic" in parsed["koken"]
         assert parsed["lisans"] == "CC BY-SA 4.0"
         assert parsed["url"] == "https://en.wiktionary.org/wiki/آیا"
+        assert parsed["form_of"] == []
+        assert parsed["cekim_mi"] is False
+
+    def test_parse_form_of_inflection(self) -> None:
+        fixture_file = FIXTURES_DIR / "kaikki_sample.jsonl"
+        with fixture_file.open("r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        # Son eklenen 6. satır çekimli biçim kaydıdır
+        entry = json.loads(lines[-1])
+        parsed = parse_wiktionary_entry(entry, idx=5)
+        assert parsed is not None
+        assert parsed["cekim_mi"] is True
+        assert len(parsed["form_of"]) == 1
+        assert parsed["form_of"][0]["lemma"] == "كاتب"
+        assert "form-of" in parsed["form_of"][0]["etiketler"]
+        assert "plural" in parsed["form_of"][0]["etiketler"]
 
     def test_parse_skips_non_arabic(self) -> None:
         fixture_file = FIXTURES_DIR / "kaikki_sample.jsonl"

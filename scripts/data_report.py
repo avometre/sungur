@@ -50,18 +50,21 @@ def generate_report_for_file(file_path: Path, seed: int = 42) -> None:
         print("Dosyada kayıt bulunamadı.\n")
         return
 
-    # 1. 'arap' alanına göre tekrar oranı
-    arap_list = [r.get("arap", "") for r in records if r.get("arap")]
-    unique_arap = len(set(arap_list))
-    repeat_count = len(arap_list) - unique_arap
-    repeat_rate = (repeat_count / len(arap_list) * 100.0) if arap_list else 0.0
+    # 1 ve 2. 'arap' alanına göre tekrar oranı ve ortalama uzunluk
+    has_arap_field = any("arap" in r for r in records)
+    if has_arap_field:
+        arap_list = [r.get("arap", "") for r in records if r.get("arap")]
+        unique_arap = len(set(arap_list))
+        repeat_count = len(arap_list) - unique_arap
+        repeat_rate = (repeat_count / len(arap_list) * 100.0) if arap_list else 0.0
 
-    print(f"Benzersiz 'arap'    : {unique_arap}")
-    print(f"Tekrar Eden 'arap'  : {repeat_count} (%{repeat_rate:.2f})")
+        print(f"Benzersiz 'arap'    : {unique_arap}")
+        print(f"Tekrar Eden 'arap'  : {repeat_count} (%{repeat_rate:.2f})")
 
-    # 2. Ortalama 'arap' uzunluğu (karakter sayısı)
-    avg_len = (sum(len(a) for a in arap_list) / len(arap_list)) if arap_list else 0.0
-    print(f"Ortalama 'arap' Uz. : {avg_len:.2f} karakter")
+        avg_len = (sum(len(a) for a in arap_list) / len(arap_list)) if arap_list else 0.0
+        print(f"Ortalama 'arap' Uz. : {avg_len:.2f} karakter")
+    else:
+        print("arap alanı yok")
 
     # 3. Boş / null alan sayıları
     all_keys: set[str] = set()

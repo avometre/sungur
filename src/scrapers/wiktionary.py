@@ -102,6 +102,23 @@ def parse_wiktionary_entry(entry: dict[str, Any], idx: int = 0) -> Optional[dict
     if koken is not None and not isinstance(koken, str):
         koken = str(koken)
 
+    # 5. Çekimli biçim (form_of) bilgisi
+    form_of: list[dict[str, Any]] = []
+    for sense in entry.get("senses", []):
+        if isinstance(sense, dict):
+            tags = sense.get("tags", [])
+            if not isinstance(tags, list):
+                tags = [tags] if tags else []
+            for fo in sense.get("form_of", []):
+                if isinstance(fo, dict) and fo.get("word"):
+                    lemma = str(fo["word"]).strip()
+                    if lemma:
+                        item = {"lemma": lemma, "etiketler": list(tags)}
+                        if item not in form_of:
+                            form_of.append(item)
+
+    cekim_mi = bool(form_of)
+
     return {
         "kaynak": "wiktionary",
         "id": f"wikt:{arap_ham}:{pos}:{idx}",
@@ -113,6 +130,8 @@ def parse_wiktionary_entry(entry: dict[str, Any], idx: int = 0) -> Optional[dict
         "anlam": anlam,
         "turkce": turkce,
         "koken": koken,
+        "form_of": form_of,
+        "cekim_mi": cekim_mi,
         "lisans": "CC BY-SA 4.0",
         "url": f"https://en.wiktionary.org/wiki/{arap_ham}",
     }

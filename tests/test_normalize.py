@@ -1,6 +1,8 @@
 import pytest
 from src.common.normalize import (
+    arabic_letter_count,
     arabic_ratio,
+    has_kurdish_letters,
     normalize_latin,
     normalize_ottoman,
     tr_lower,
@@ -232,3 +234,60 @@ class TestArabicRatio:
         # "\u06a9\u062a\u0627\u0628 okumak" -> 4 arapça, 6 latin = 4/10 = 0.4
         ratio = arabic_ratio("\u06a9\u062a\u0627\u0628 okumak")
         assert pytest.approx(ratio, 0.001) == 0.4
+
+
+class TestNormalizeAdditions:
+    def test_letter_unification_kurdish_heh(self) -> None:
+        # U+06D5 (ە) -> U+0647 (ه)
+        # "\u062e\u06cc\u0631\u06d5" (Hayra) -> "\u062e\u06cc\u0631\u0647" (Hayra)
+        assert normalize_ottoman("\u062e\u06cc\u0631\u06d5") == "\u062e\u06cc\u0631\u0647"
+
+    def test_letter_unification_heh_doachashmee(self) -> None:
+        # U+06BE (ھ) -> U+0647 (ه)
+        # "\u06be\u0645\u0627\u0631\u0647" (hemâre) -> "\u0647\u0645\u0627\u0631\u0647"
+        assert normalize_ottoman("\u06be\u0645\u0627\u0631\u0647") == "\u0647\u0645\u0627\u0631\u0647"
+
+    def test_letter_unification_nef_alt(self) -> None:
+        # U+0763 (ݣ) -> U+06AD (ڭ)
+        # "\u0628\u0646\u0763" (bin/biñ) -> "\u0628\u0646\u06ad" (biñ)
+        assert normalize_ottoman("\u0628\u0646\u0763") == "\u0628\u0646\u06ad"
+
+    def test_letter_unification_high_hamza(self) -> None:
+        # U+0674 (ٴ) -> U+0621 (ء)
+        assert normalize_ottoman("\u0674") == "\u0621"
+
+    def test_punctuation_additions(self) -> None:
+        # U+066C (٬) -> ,   U+066B (٫) -> .   U+06D4 (۔) -> .
+        raw = "\u066c \u066b \u06d4"
+        assert normalize_ottoman(raw) == ", . ."
+
+
+class TestKurdishDetector:
+    def test_kurdish_letters_detected(self) -> None:
+        # U+06CE (ێ), U+06C6 (ۆ), U+06B5 (ڵ), U+0695 (ڕ), U+06D0 (ې), U+06C5 (ۅ), U+06CA (ۊ)
+        assert has_kurdish_letters("دیوانی \u06ce\u06c6") is True
+        assert has_kurdish_letters("\u06b5\u0695") is True
+        assert has_kurdish_letters("\u06d0 \u06c5 \u06ca") is True
+
+    def test_standard_ottoman_no_kurdish_letters(self) -> None:
+        # "\u062f\u0648\u0644\u062a \u0639\u0644\u06cc\u0647" (devlet-i aliyye)
+        assert has_kurdish_letters("\u062f\u0648\u0644\u062a \u0639\u0644\u06cc\u0647") is False
+        assert has_kurdish_letters("") is False
+        assert has_kurdish_letters("sadece latin metin") is False
+
+
+class TestArabicLetterCount:
+    def test_counts_only_letters(self) -> None:
+        # "\u06a9\u062a\u0627\u0628" (kitâb) -> 4 harf
+        assert arabic_letter_count("\u06a9\u062a\u0627\u0628") == 4
+
+    def test_ignores_digits_and_punctuation(self) -> None:
+        # "\u06a9\u062a\u0627\u0628 \u0661\u0662\u0663 \u060c." -> 4 harf (rakam ve noktalama sayılmaz)
+        assert arabic_letter_count("\u06a9\u062a\u0627\u0628 \u0661\u0662\u0663 \u060c.") == 4
+
+    def test_ignores_harakat_and_latin(self) -> None:
+        # "\u0643\u064e\u062a\u064e\u0628\u064e" (k-t-b + 3 fatha) -> 3 harf
+        assert arabic_letter_count("\u0643\u064e\u062a\u064e\u0628\u064e") == 3
+        # Latin harfler ve boşluklar sayılmaz
+        assert arabic_letter_count("kitap 123 !?") == 0
+        assert arabic_letter_count("") == 0

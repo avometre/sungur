@@ -97,6 +97,10 @@ LETTER_UNIFICATION_MAP: dict[str, str] = {
     "\u0643": "\u06A9",  # ك (Arabic Kaf) -> ک (Keheh)
     "\u06C1": "\u0647",  # ہ (Urdu Heh Goal) -> ه (Arabic Heh)
     "\u06C2": "\u06C0",  # ۂ (Urdu Heh Goal with Hamza) -> ۀ (Heh with Yeh Above)
+    "\u06D5": "\u0647",  # ە (Kurdish Heh) -> ه (Arabic Heh)
+    "\u06BE": "\u0647",  # ھ (Heh Doachashmee) -> ه (Arabic Heh)
+    "\u0763": "\u06AD",  # ݣ (Nef alternative) -> ڭ (Ottoman Nef)
+    "\u0674": "\u0621",  # ٴ (High Hamza) -> ء (Arabic Hamza)
 }
 
 # Korunacak Osmanlıca Harfler (Referans / Güvence amaçlı küme)
@@ -152,7 +156,24 @@ PUNCTUATION_MAP: dict[str, str] = {
     "\u060C": ",",  # ، (Arabic Comma)
     "\u061F": "?",  # ؟ (Arabic Question Mark)
     "\u061B": ";",  # ؛ (Arabic Semicolon)
+    "\u066C": ",",  # ٬ (Arabic Thousands Separator)
+    "\u066B": ".",  # ٫ (Arabic Decimal Separator)
+    "\u06D4": ".",  # ۔ (Arabic Full Stop / Urdu Period)
 }
+
+# 11. Kürtçeye Özgü Harfler (Osmanlıca metinlerde bulunmayan alfabe ayırıcıları)
+KURDISH_ONLY_LETTERS: set[str] = {
+    "\u06CE",  # ێ (Kurdish Ye)
+    "\u06C6",  # ۆ (Oe)
+    "\u06B5",  # ڵ (Peheh / Kurdish L)
+    "\u0695",  # ڕ (Reh with V below / Kurdish R)
+    "\u06D0",  # ې (E)
+    "\u06C5",  # ۅ (Kirghiz Oe)
+    "\u06CA",  # ۊ (Waw with Two Dots Above)
+}
+
+# 12. Arap Betiği Harf Sayım Deseni
+ARABIC_LETTER_PATTERN: regex.Pattern = regex.compile(r"[\p{Arabic}&&\p{L}]", regex.V1)
 
 # 11. Boşluk Deseni
 WHITESPACE_PATTERN: regex.Pattern = regex.compile(r"[\s\u00A0]+")
@@ -379,3 +400,23 @@ def arabic_ratio(text: str) -> float:
     joined = "".join(non_space_chars)
     arabic_chars = regex.findall(r"\p{Arabic}", joined)
     return len(arabic_chars) / len(non_space_chars)
+
+
+def has_kurdish_letters(text: str) -> bool:
+    """Metinde Kürtçeye özgü harf (KURDISH_ONLY_LETTERS) bulunup bulunmadığını denetler.
+
+    Ham metin üzerinde çalışır.
+    """
+    if not text:
+        return False
+    return any(ch in KURDISH_ONLY_LETTERS for ch in text)
+
+
+def arabic_letter_count(text: str) -> int:
+    """Metin içindeki Arap betiği HARFLERİNİN ([\\p{Arabic}&&\\p{L}]) sayısını döndürür.
+
+    Rakamlar, noktalama işaretleri ve harekeler sayılmaz.
+    """
+    if not text:
+        return 0
+    return len(ARABIC_LETTER_PATTERN.findall(text))

@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.class
@@ -23,6 +23,7 @@ wandb/
 data/**
 !data/**/
 !data/**/.gitkeep
+!data/gold/*.csv
 
 models/**
 !models/**/

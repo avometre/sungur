@@ -27,7 +27,7 @@ from src.common.normalize import (
     normalize_latin,
     normalize_ottoman,
 )
-from src.translit.skeleton import skeleton_similarity
+from src.translit.skeleton import fine_skeleton_similarity, skeleton_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +158,7 @@ def clean_wiktionary(
 
     Kurallar:
     - arap alanı normalize_ottoman ile yeniden üretilir.
+    - arap harfi içermeyenler elenir (neden: 'arap_harfi_yok').
     - latin alanı boş olanlar elenir (neden: 'latin_yok').
     - (arap, latin_sade, tur) üçlüsüne göre tekrarlar birleştirilir.
     - skeleton_similarity(arap, latin) < 0.3 olanlar SİLİNMEZ, 'supheli': True işaretlenir.
@@ -169,6 +170,12 @@ def clean_wiktionary(
         r_copy = dict(r)
         ham = str(r_copy.get("arap_ham", ""))
         r_copy["arap"] = normalize_ottoman(ham)
+
+        # Arap harfi içermeyen kayıtları ele (rakam girdileri vb.)
+        if arabic_letter_count(ham) == 0:
+            r_copy["neden"] = "arap_harfi_yok"
+            excluded.append(r_copy)
+            continue
 
         latin = r_copy.get("latin")
         if not latin or not str(latin).strip():
@@ -282,6 +289,8 @@ def clean_gazetteer(
     - arap alanı normalize_ottoman ile yeniden üretilir.
     - latin alanından adaylar çıkarılır. Aday yoksa elenir ('latin_yok').
     - Her aday için skeleton_similarity(arap, aday) hesaplanır; en yükseği 'latin' seçilir.
+    - En yüksek iki adayın kaba skor farkı <= 0.02 ise ince iskelet (fine_skeleton_similarity)
+      ile B/P ve C/Ç sınıfları ayrılarak eşitlik bozulur.
     - 'latin_adaylar', 'eslesme_skoru', 'guvenilir': (skor >= 0.6) ve 'belirsiz' alanları eklenir.
     - 'latin_sade' seçilen adaydan yeniden üretilir.
     - (arap, latin) tekrarları elenir (neden: 'tekrar').
@@ -303,15 +312,26 @@ def clean_gazetteer(
             excluded.append(r_copy)
             continue
 
-        # En iyi adayı seç
-        best_cand = candidates[0]
-        best_score = -1.0
+        # En iyi adayı seç (kaba iskelet benzerliği)
+        scored_candidates = [(cand, skeleton_similarity(arap, cand)) for cand in candidates]
+        # Skora göre azalan sırala (kararlı sıralama: eşit skorda adayların geliş sırası korunur)
+        sorted_cands = sorted(scored_candidates, key=lambda x: x[1], reverse=True)
 
-        for cand in candidates:
-            score = skeleton_similarity(arap, cand)
-            if score > best_score:
-                best_score = score
-                best_cand = cand
+        best_cand, best_score = sorted_cands[0]
+
+        # En yüksek iki adayın skor farkı <= 0.02 ise ince iskelet ile eşitlik boz
+        if len(sorted_cands) >= 2:
+            cand1, score1 = sorted_cands[0]
+            cand2, score2 = sorted_cands[1]
+            if round(score1 - score2, 4) <= 0.02:
+                fine1 = fine_skeleton_similarity(arap, cand1)
+                fine2 = fine_skeleton_similarity(arap, cand2)
+                if fine2 > fine1:
+                    best_cand = cand2
+                    best_score = score2
+                else:
+                    best_cand = cand1
+                    best_score = score1
 
         r_copy["latin_adaylar"] = candidates
         r_copy["latin"] = best_cand

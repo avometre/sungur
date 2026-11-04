@@ -9,7 +9,12 @@ hesaplar.
 import difflib
 import regex
 
-from src.common.normalize import normalize_latin, normalize_ottoman, tr_lower
+from src.common.normalize import (
+    arabic_letter_count,
+    normalize_latin,
+    normalize_ottoman,
+    tr_lower,
+)
 
 # Arapça Harf Sınıfı Eşlemeleri (Çıktı sınıfları)
 # ب پ → B      ت ط ة د → T      ث س ص → S      ج چ → C      ح خ ه ۀ → H
@@ -92,20 +97,28 @@ LATIN_CONSONANT_MAP: dict[str, str] = {
     "m": "M",
 }
 
+# İnce İskelet Harf Sınıfı Eşlemeleri (B vs P, C vs Ç ayrık)
+# ب → B, پ → P, ج → C, چ → Ç
+FINE_ARABIC_CONSONANT_MAP: dict[str, str] = {
+    **ARABIC_CONSONANT_MAP,
+    "\u067E": "P",  # پ (Peh - ince iskelette B'den ayrılır)
+    "\u0686": "Ç",  # چ (Tche - ince iskelette C'den ayrılır)
+}
+
+# b → B, p → P, c → C, ç → Ç
+FINE_LATIN_CONSONANT_MAP: dict[str, str] = {
+    **LATIN_CONSONANT_MAP,
+    "p": "P",  # p (ince iskelette b'den ayrılır)
+    "ç": "Ç",  # ç (ince iskelette c'den ayrılır)
+}
+
 # Kelime çıkarma ve sondaki harf dışı ekleri temizleme desenleri
 ARABIC_WORD_PATTERN: regex.Pattern = regex.compile(r"[\p{Arabic}\u200C]+")
 TRAILING_NON_LETTER_PATTERN: regex.Pattern = regex.compile(r"[\p{M}\u200C\u0640]+$")
 
 
-def arabic_skeleton(arap: str) -> str:
-    """Arap harfli metnin ünsüz iskeletini çıkarır.
-
-    1. normalize_ottoman ile standartlaştırılır.
-    2. Kelimelere bölünür; her kelimenin sonundaki ه veya ۀ atılır (e/a ünlüsü).
-    3. Ünlü taşıyıcıları (ا آ أ إ ع ء ئ ؤ و ی), harekeler, ZWNJ, boşluk, rakam
-       ve eşleme tablosunda bulunmayan tüm işaretler elenir.
-    4. Kalan ünsüzler büyük harf sınıflarına (B, T, S, C, H, Z, R, J, X, K, N, F, L, M) dönüştürülür.
-    """
+def _extract_arabic_skeleton(arap: str, mapping: dict[str, str]) -> str:
+    """Arap harfli metinden verilen eşleme tablosuna göre ünsüz iskeletini çıkarır."""
     if not arap:
         return ""
 
@@ -121,11 +134,40 @@ def arabic_skeleton(arap: str) -> str:
             w = w[:-1]
 
         for ch in w:
-            mapped = ARABIC_CONSONANT_MAP.get(ch)
+            mapped = mapping.get(ch)
             if mapped:
                 skeleton_chars.append(mapped)
 
     return "".join(skeleton_chars)
+
+
+def _extract_latin_skeleton(latin: str, mapping: dict[str, str]) -> str:
+    """Latin harfli metinden verilen eşleme tablosuna göre ünsüz iskeletini çıkarır."""
+    if not latin:
+        return ""
+
+    s = tr_lower(latin)
+    s = normalize_latin(s, strip_diacritics=True)
+    skeleton_chars: list[str] = []
+
+    for ch in s:
+        mapped = mapping.get(ch)
+        if mapped:
+            skeleton_chars.append(mapped)
+
+    return "".join(skeleton_chars)
+
+
+def arabic_skeleton(arap: str) -> str:
+    """Arap harfli metnin ünsüz iskeletini çıkarır.
+
+    1. normalize_ottoman ile standartlaştırılır.
+    2. Kelimelere bölünür; her kelimenin sonundaki ه veya ۀ atılır (e/a ünlüsü).
+    3. Ünlü taşıyıcıları (ا آ أ إ ع ء ئ ؤ و ی), harekeler, ZWNJ, boşluk, rakam
+       ve eşleme tablosunda bulunmayan tüm işaretler elenir.
+    4. Kalan ünsüzler büyük harf sınıflarına (B, T, S, C, H, Z, R, J, X, K, N, F, L, M) dönüştürülür.
+    """
+    return _extract_arabic_skeleton(arap, ARABIC_CONSONANT_MAP)
 
 
 def latin_skeleton(latin: str) -> str:
@@ -135,19 +177,30 @@ def latin_skeleton(latin: str) -> str:
     2. Ünlüler (a e ı i o ö u ü â î û v y) ve harf olmayan tüm karakterler elenir.
     3. Konsonantlar büyük harf sınıflarına (B, T, S, C, H, Z, R, J, X, K, N, F, L, M) dönüştürülür.
     """
-    if not latin:
+    return _extract_latin_skeleton(latin, LATIN_CONSONANT_MAP)
+
+
+def fine_arabic_skeleton(arap: str) -> str:
+    """Arap harfli metnin ince ünsüz iskeletini çıkarır (B/P ve C/Ç ayrık)."""
+    return _extract_arabic_skeleton(arap, FINE_ARABIC_CONSONANT_MAP)
+
+
+def fine_latin_skeleton(latin: str) -> str:
+    """Latin harfli metnin ince ünsüz iskeletini çıkarır (B/P ve C/Ç ayrık)."""
+    return _extract_latin_skeleton(latin, FINE_LATIN_CONSONANT_MAP)
+
+
+def fine_skeleton(text: str, is_arabic: bool = False) -> str:
+    """Metnin ince ünsüz iskeletini çıkarır (B vs P, C vs Ç ayrık).
+
+    is_arabic=True veya metinde Arapça harf bulunması durumunda Arapça kuralları,
+    aksi halde Latin kuralları uygulanır.
+    """
+    if not text:
         return ""
-
-    s = tr_lower(latin)
-    s = normalize_latin(s, strip_diacritics=True)
-    skeleton_chars: list[str] = []
-
-    for ch in s:
-        mapped = LATIN_CONSONANT_MAP.get(ch)
-        if mapped:
-            skeleton_chars.append(mapped)
-
-    return "".join(skeleton_chars)
+    if is_arabic or arabic_letter_count(text) > 0:
+        return fine_arabic_skeleton(text)
+    return fine_latin_skeleton(text)
 
 
 def skeleton_similarity(arap: str, latin: str) -> float:
@@ -157,6 +210,21 @@ def skeleton_similarity(arap: str, latin: str) -> float:
     """
     s_a = arabic_skeleton(arap)
     s_l = latin_skeleton(latin)
+
+    if not s_a and not s_l:
+        return 0.0
+
+    return difflib.SequenceMatcher(None, s_a, s_l).ratio()
+
+
+def fine_skeleton_similarity(arap: str, latin: str) -> float:
+    """Arap harfli metin ile Latin metin arasındaki ince ünsüz iskeleti benzerliğini [0, 1] aralığında döner.
+
+    B/P (ب vs پ, b vs p) ve C/Ç (ج vs ç, c vs ç) sınıfları ayrı değerlendirilir.
+    Her iki iskelet de boşsa 0.0 döner.
+    """
+    s_a = fine_skeleton(arap, is_arabic=True)
+    s_l = fine_skeleton(latin, is_arabic=False)
 
     if not s_a and not s_l:
         return 0.0

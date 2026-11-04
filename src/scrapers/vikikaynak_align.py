@@ -22,7 +22,7 @@ import regex
 from bs4 import BeautifulSoup
 
 from src.common.io import read_jsonl, write_jsonl
-from src.common.normalize import arabic_ratio
+from src.common.normalize import arabic_ratio, tr_lower
 from src.scrapers.http import get_default_session, polite_get
 from src.translit.skeleton import skeleton_similarity
 
@@ -34,9 +34,29 @@ WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 
 LATIN_LETTER_PATTERN = regex.compile(r"[a-zA-ZçğıöşüÇĞİÖŞÜâîûÂÎÛ]")
 
+NAVIGATION_EXACT_TITLES = {
+    "sayfa başı",
+    "kaynakça",
+    "kaynak",
+    "notlar",
+    "dipnotlar",
+    "ayrıca bakınız",
+    "dış bağlantılar",
+    "içindekiler",
+}
+
+# 120 karakterden uzun satırları cümle sonu noktalama işaretlerinden bölen regex deseni.
+# - Noktalama işaretleri: . ! ? : ; … ve Arapça ؟ ؛ ۔
+# - İsteğe bağlı kapanış tırnakları/ayraçları: " ' ” » )
+# - Üç nokta (...) tek işaret sayılır, içinden bölünmez.
+# - Tek harf + nokta kısaltmaları (M. Kemal, م. Ali) korunur.
+SPLIT_SENTENCE_PATTERN = regex.compile(
+    r'(?<=[!?:;…؟؛۔][\"\'\”\»\)]?)\s+|(?<=\.{3}[\"\'\”\»\)]?)\s+|(?<=(?<!\b\p{L})\.[\"\'\”\»\)]?)\s+'
+)
+
 
 # ---------------------------------------------------------------------------
-# 1. HTML Temizleyici (Türkçe Vikikaynak)
+# 1. HTML Temizleyici ve Cümle Bölücü (Türkçe Vikikaynak)
 # ---------------------------------------------------------------------------
 
 
@@ -44,23 +64,37 @@ def clean_latin_html(html_content: str) -> list[str]:
     """Türkçe Vikikaynak HTML içeriğinden Latin harfli metin satırlarını ayıklar.
 
     Kurallar:
-    - script, style, noscript, table vb. etiketleri temizler.
+    - script, style, noscript etiketlerini temizler.
+    - table.cquote etiketlerini unwrap ederek şiir satırlarını korur; diğer tabloları siler.
     - Başlık şablonları, kaynak/yazar kutuları, navigasyon ve referans seçicilerini siler:
       .mw-editsection, .ws-header, .headertemplate, .ws-noexport, .navbox,
       .vertical-navbox, .metadata, sup.reference, ol.references, .reflist,
       .catlinks, .noprint, .sisterproject, .interproject, .licenseContainer,
       .plainlinks, .ws-summary
     - <br> etiketlerini yeni satıra dönüştürür.
-    - Metin satırlarına bölünür; arabic_ratio < 0.1 ve en az 3 Latin harfi
-      ([a-zA-ZçğıöşüÇĞİÖŞÜâîûÂÎÛ]) içeren satırları döndürür.
+    - Gezinme artığı satırlarını (Sayfa başı, Kaynakça, Notlar vb. ve ← / → okları) siler.
+    - Tek kelimelik yazar adlarını korur.
+    - arabic_ratio < 0.1 ve en az 3 Latin harfi içeren satırları döndürür.
     """
     if not html_content:
         return []
 
     soup = BeautifulSoup(html_content, "html.parser")
 
-    for tag in soup.find_all(["script", "style", "noscript", "table"]):
+    for tag in soup.find_all(["script", "style", "noscript"]):
         tag.decompose()
+
+    # cquote tabloları şiir metinlerini içerdiğinden unwrap edilir, diğer tablolar silinir
+    for t in soup.find_all("table"):
+        if t.parent is None:
+            continue
+        classes = t.get("class", [])
+        if isinstance(classes, str):
+            classes = classes.split()
+        if "cquote" in classes:
+            t.unwrap()
+        else:
+            t.decompose()
 
     selectors_to_remove = [
         ".mw-editsection",
@@ -93,10 +127,44 @@ def clean_latin_html(html_content: str) -> list[str]:
         line = raw.strip()
         if not line:
             continue
+
+        # Gezinme artığı temizliği (Türkçe küçük harf)
+        line_lower = tr_lower(line)
+        if line_lower in NAVIGATION_EXACT_TITLES:
+            continue
+        if (
+            line.startswith("← ")
+            or line.endswith(" →")
+            or line.startswith("←")
+            or line.endswith("→")
+        ):
+            continue
+
         if arabic_ratio(line) < 0.1 and len(LATIN_LETTER_PATTERN.findall(line)) >= 3:
             lines.append(line)
 
     return lines
+
+
+def split_sentences(text: str) -> list[str]:
+    """120 karakterden uzun satırları cümle sonu noktalama işaretlerinden böler.
+
+    Kurallar:
+    - Boş metinler için boş liste döner.
+    - 120 karakter veya daha kısa satırlara dokunmaz (şiir mısralarını korur).
+    - 120 karakterden uzun satırları '. ', '! ', '? ', ': ', '; ', '… ' ve Arapça '؟ ', '؛ ', '۔ ' işaretlerinden böler.
+    - Tırnak/ayraç içinde biten cümleleri korur (ör. '"Vatan sağ olsun!" Sonra...').
+    - '...' üç noktayı tek işaret sayar (içinden bölmez).
+    - Tek harf + nokta kısaltmalarını (ör. 'M. Kemal', 'M. A. Ersoy', 'م. Ali') korur.
+    - Noktalama içermeyen uzun satırları bölmeden tek parça olarak döner.
+    """
+    s = text.strip()
+    if not s or len(s) <= 120:
+        return [s] if s else []
+
+    parts = [p.strip() for p in SPLIT_SENTENCE_PATTERN.split(s) if p.strip()]
+    return parts if parts else [s]
+
 
 
 # ---------------------------------------------------------------------------
@@ -417,15 +485,24 @@ def sanitize_filename(title: str) -> str:
 
 
 def fetch_latin_page_html(
-    title: str, cache_dir: Path, session: Optional[Any] = None
+    title: str,
+    cache_dir: Path,
+    session: Optional[Any] = None,
+    force_refresh: bool = False,
 ) -> Optional[str]:
-    """Türkçe Vikikaynak'tan sayfa HTML içeriğini çeker ve önbelleğe alır."""
+    """Türkçe Vikikaynak'tan sayfa HTML içeriğini çeker ve önbelleğe alır.
+
+    - "redirects": "1" parametresiyle yönlendirmeleri çözer.
+    - Önbellekteki eski yönlendirme şablonu kalıntılarını tespit ederse yeniler.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{sanitize_filename(title)}.html"
 
-    if cache_file.exists():
+    if cache_file.exists() and not force_refresh:
         try:
-            return cache_file.read_text(encoding="utf-8")
+            content = cache_file.read_text(encoding="utf-8")
+            if "redirectText" not in content and "redirectMsg" not in content:
+                return content
         except Exception:
             pass
 
@@ -436,6 +513,7 @@ def fetch_latin_page_html(
                 "action": "parse",
                 "page": title,
                 "prop": "text",
+                "redirects": "1",
                 "format": "json",
             },
             session=session,
@@ -457,6 +535,266 @@ def fetch_latin_page_html(
         logger.warning("tr.wikisource.org isteği başarısız oldu (%s): %s", title, e)
 
     return None
+
+
+def search_candidate_titles(
+    candidate: str,
+    fallback_search: bool = True,
+    session: Optional[Any] = None,
+) -> list[str]:
+    """Türkçe Vikikaynak'ta aday başlığı tam başlık ve gerekirse arama sorgusu ile arar.
+
+    1. Tam başlık sorgusu: action=query&titles=<candidate>&redirects=1&format=json
+       Sayfa mevcutsa yönlendirilmiş veya standart başlığı döndürür.
+    2. Tam başlık bulunamazsa ve fallback_search=True ise:
+       action=query&list=search&srsearch=<candidate>&srnamespace=0&srlimit=5&format=json
+       Arama sonucunda dönen ilk en fazla 5 başlığı döndürür.
+    """
+    cand = candidate.strip()
+    if not cand:
+        return []
+
+    found_titles: list[str] = []
+
+    # 1. Adım: Tam başlık sorgusu (redirects=1 ile)
+    try:
+        resp = polite_get(
+            TR_WIKISOURCE_API,
+            params={
+                "action": "query",
+                "titles": cand,
+                "redirects": "1",
+                "format": "json",
+            },
+            session=session,
+        ).json()
+
+        pages = resp.get("query", {}).get("pages", {})
+        for pid_str, pdata in pages.items():
+            if pid_str != "-1" and "missing" not in pdata:
+                title = pdata.get("title")
+                if title and title not in found_titles:
+                    found_titles.append(title)
+    except Exception as e:
+        logger.warning("Tam başlık sorgusunda hata (%s): %s", cand, e)
+
+    if found_titles:
+        return found_titles
+
+    if not fallback_search:
+        return []
+
+    # 2. Adım: Fallback Arama sorgusu (srlimit=5)
+    try:
+        resp_search = polite_get(
+            TR_WIKISOURCE_API,
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": cand,
+                "srnamespace": "0",
+                "srlimit": "5",
+                "format": "json",
+            },
+            session=session,
+        ).json()
+
+        search_results = resp_search.get("query", {}).get("search", [])
+        for item in search_results:
+            title = item.get("title")
+            if title and title not in found_titles:
+                found_titles.append(title)
+    except Exception as e:
+        logger.warning("Arama sorgusunda hata (%s): %s", cand, e)
+
+    return found_titles
+
+
+def evaluate_candidate_alignment(
+    arap_lines: list[str],
+    latin_lines: list[str],
+) -> tuple[float, float, list[dict[str, Any]]]:
+    """Arapça ve Latin satırları dinamik programlama ile hizalayarak
+    (kapsama, ort_skor, pairs) demetini döndürür.
+
+    Kapsama ve ortalama skor hesaplama kuralları:
+      - split_sentences uygulanır.
+      - guvenilir_pairs = [p for p in pairs if p.get("skor", 0.0) >= 0.55]
+      - kapsanan_arap_sayisi = sum(2 if p.get("hizalama") == "2-1" else 1 for p in guvenilir_pairs)
+      - kapsama = kapsanan_arap_sayisi / len(split_arap) (len(split_arap) > 0 ise)
+      - ort_skor = sum(p["skor"] for p in guvenilir_pairs) / len(guvenilir_pairs) (guvenilir_pairs varsa)
+    """
+    if not arap_lines or not latin_lines:
+        return 0.0, 0.0, []
+
+    split_arap: list[str] = []
+    for line in arap_lines:
+        split_arap.extend(split_sentences(line))
+    split_arap = [s for s in split_arap if s.strip()]
+
+    split_lat: list[str] = []
+    for line in latin_lines:
+        split_lat.extend(split_sentences(line))
+    split_lat = [s for s in split_lat if s.strip()]
+
+    if not split_arap or not split_lat:
+        return 0.0, 0.0, []
+
+    pairs, _ = align_lines(split_arap, split_lat)
+    guvenilir = [p for p in pairs if p.get("skor", 0.0) >= 0.55]
+
+    if not guvenilir:
+        return 0.0, 0.0, pairs
+
+    kapsanan_arap = sum(2 if p.get("hizalama") == "2-1" else 1 for p in guvenilir)
+    kapsama = kapsanan_arap / len(split_arap) if split_arap else 0.0
+    ort_skor = sum(p["skor"] for p in guvenilir) / len(guvenilir) if guvenilir else 0.0
+
+    return round(kapsama, 4), round(ort_skor, 4), pairs
+
+
+def process_gold_candidates(
+    gold_csv_path: Path,
+    pages_lines: dict[int, list[dict[str, Any]]],
+    cache_dir: Path,
+    search_log_path: Path,
+    session: Optional[Any] = None,
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """ws_title_map.csv dosyasındaki langlinks ve claude_aday satırlarını değerlendirir.
+
+    - 71 claude_aday satırı için arama yapar, skorlar, loglar ve en yüksek kapsamalı adayı seçer.
+    - 15 langlinks satırını denetler; eşiği geçemeyen veya silinmiş olanlar için ("Sen Olmasan", "Gazel") arama yapar.
+    - ws_search_log.jsonl dosyasına her aday denemesini yazar.
+    - Kabul edilen sayfaları {pageid: record} sözlüğü olarak döndürür.
+    """
+    accepted_pages: dict[int, dict[str, Any]] = {}
+    search_logs: list[dict[str, Any]] = []
+
+    if not gold_csv_path.exists():
+        logger.warning("Elle eşleme CSV bulunamadı: %s", gold_csv_path)
+        return accepted_pages, search_logs
+
+    rows: list[dict[str, str]] = []
+    with gold_csv_path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append(r)
+
+    for row in rows:
+        try:
+            pid = int(row.get("pageid", 0))
+        except ValueError:
+            continue
+
+        not_val = row.get("not", "").strip()
+        arap_title = row.get("baslik_arap", "").strip()
+        tr_val = row.get("tr_baslik", "").strip()
+
+        page_records = pages_lines.get(pid, [])
+        raw_arap = [r["arap"] for r in page_records if r.get("arap")]
+        split_arap: list[str] = []
+        for line in raw_arap:
+            split_arap.extend(split_sentences(line))
+        split_arap = [s for s in split_arap if s.strip()]
+
+        if not split_arap:
+            continue
+
+        # 1. Durum: langlinks satırları
+        if not_val == "langlinks":
+            html = fetch_latin_page_html(tr_val, cache_dir=cache_dir, session=session)
+            if html:
+                cleaned = clean_latin_html(html)
+                kapsama, ort_skor, _ = evaluate_candidate_alignment(split_arap, cleaned)
+                if kapsama >= 0.40 and ort_skor >= 0.70:
+                    accepted_pages[pid] = {
+                        "pageid": pid,
+                        "baslik_arap": arap_title,
+                        "tr_baslik": tr_val,
+                        "yontem": "langlinks",
+                        "kapsama": kapsama,
+                        "ort_skor": ort_skor,
+                    }
+                    continue
+
+            # Eğer langlinks HTML bulunamadıysa (ör. "Sen Olmasan", "Gazel") veya eşiği geçmediyse,
+            # aday arama kurtarma mekanizması devreye girer
+            logger.info(
+                "Langlinks eksik veya eşik altı (pid=%d, %s), arama kurtarma deneniyor...",
+                pid,
+                tr_val,
+            )
+
+        # 2. Durum: claude_aday satırları ve kurtarılacak langlinks sayfaları
+        candidates = [c.strip() for c in tr_val.split("|") if c.strip()]
+        page_accepted_candidates: list[dict[str, Any]] = []
+
+        for aday in candidates:
+            found_titles = search_candidate_titles(aday, fallback_search=True, session=session)
+            if not found_titles:
+                entry = {
+                    "pageid": pid,
+                    "baslik_arap": arap_title,
+                    "aday": aday,
+                    "bulunan_baslik": "",
+                    "kapsama": 0.0,
+                    "ort_skor": 0.0,
+                    "kabul": False,
+                }
+                search_logs.append(entry)
+                continue
+
+            for f_title in found_titles:
+                html = fetch_latin_page_html(f_title, cache_dir=cache_dir, session=session)
+                if not html:
+                    entry = {
+                        "pageid": pid,
+                        "baslik_arap": arap_title,
+                        "aday": aday,
+                        "bulunan_baslik": f_title,
+                        "kapsama": 0.0,
+                        "ort_skor": 0.0,
+                        "kabul": False,
+                    }
+                    search_logs.append(entry)
+                    continue
+
+                cleaned = clean_latin_html(html)
+                kapsama, ort_skor, _ = evaluate_candidate_alignment(split_arap, cleaned)
+                kabul = bool(kapsama >= 0.40 and ort_skor >= 0.70)
+
+                entry = {
+                    "pageid": pid,
+                    "baslik_arap": arap_title,
+                    "aday": aday,
+                    "bulunan_baslik": f_title,
+                    "kapsama": kapsama,
+                    "ort_skor": ort_skor,
+                    "kabul": kabul,
+                }
+                search_logs.append(entry)
+
+                if kabul:
+                    page_accepted_candidates.append(
+                        {
+                            "pageid": pid,
+                            "baslik_arap": arap_title,
+                            "tr_baslik": f_title,
+                            "yontem": "arama",
+                            "kapsama": kapsama,
+                            "ort_skor": ort_skor,
+                        }
+                    )
+
+        if page_accepted_candidates:
+            # En yüksek kapsama, eşitlikte en yüksek ort_skor
+            best = max(page_accepted_candidates, key=lambda x: (x["kapsama"], x["ort_skor"]))
+            accepted_pages[pid] = best
+
+    # ws_search_log.jsonl dosyasına tüm aday arama denemelerini yaz
+    write_jsonl(search_log_path, search_logs)
+
+    return accepted_pages, search_logs
 
 
 # ---------------------------------------------------------------------------
@@ -531,48 +869,63 @@ def main() -> None:
         f"Toplam {len(clean_records)} satır, {len(pages_titles)} benzersiz sayfa bulundu."
     )
 
-    # 2. Sayfa Eşleme (Page Linking)
-    matched_pages, unmatched_ids = find_page_links(
-        pages_titles, gold_csv_path=gold_csv
+    # 2. Sayfa Eşleme, Aday Arama, Skorlama ve Loglama (R2)
+    search_log_file = interim_dir / "ws_search_log.jsonl"
+    matched_pages, search_logs = process_gold_candidates(
+        gold_csv_path=gold_csv,
+        pages_lines=pages_lines,
+        cache_dir=cache_dir,
+        search_log_path=search_log_file,
     )
 
-    # Sayfa bağlantılarını ws_page_links.jsonl dosyasına kaydet
-    page_links_list = list(matched_pages.values())
+    # Kabul edilen sayfaları ws_page_links.jsonl dosyasına kaydet
+    page_links_list = sorted(list(matched_pages.values()), key=lambda x: x["pageid"])
     write_jsonl(interim_dir / "ws_page_links.jsonl", page_links_list)
 
     yontem_sayilari = Counter(p["yontem"] for p in matched_pages.values())
 
     print("\n--- Sayfa Eşleme Özeti ---")
-    print(f"Eşleşen Sayfa Sayısı   : {len(matched_pages)}")
+    print(f"Kabul Edilen Sayfa Sayısı : {len(matched_pages)}")
     for ym, cnt in yontem_sayilari.items():
         print(f"  - Yöntem: {ym:<12} : {cnt:>4} sayfa")
-    print(f"Eşleşmeyen Sayfa Sayısı : {len(unmatched_ids)}")
-    print(f"Elle eşleme CSV dosyası : {gold_csv}")
+    print(f"Aday Denemesi Sayısı    : {len(search_logs)}")
+    print(f"Arama Log Dosyası       : {search_log_file}")
+    print(f"Sayfa Bağlantı Dosyası  : {interim_dir / 'ws_page_links.jsonl'}")
 
-    # 3. Latin HTML Metinlerini Çek ve Hizala
+    # 3. Tüm Kabul Edilen Sayfalar İçin Cümle Bölme ile Nihai Satır Hizalama (R3)
     all_parallel_pairs: list[dict[str, Any]] = []
     total_skipped_arap = 0
     total_skipped_latin = 0
 
     print("\nSayfalar Türkçe Vikikaynak ile satır satır hizalanıyor...")
 
-    for pid, link_info in matched_pages.items():
-        tr_title = link_info["tr_baslik"]
-        arap_title = link_info["baslik_arap"]
+    for pid, pinfo in sorted(matched_pages.items()):
+        tr_title = pinfo["tr_baslik"]
+        arap_title = pinfo["baslik_arap"]
         page_records = pages_lines.get(pid, [])
-        arap_lines = [r["arap"] for r in page_records]
+        raw_arap = [r["arap"] for r in page_records if r.get("arap")]
+
+        split_arap: list[str] = []
+        for line in raw_arap:
+            split_arap.extend(split_sentences(line))
+        split_arap = [s for s in split_arap if s.strip()]
 
         html = fetch_latin_page_html(tr_title, cache_dir=cache_dir)
         if not html:
             logger.info("Metin içeriği alınamadı (%s), atlanıyor.", tr_title)
             continue
 
-        latin_lines = clean_latin_html(html)
-        if not latin_lines:
+        raw_latin = clean_latin_html(html)
+        if not raw_latin:
             logger.info("Latin satır bulunamadı (%s), atlanıyor.", tr_title)
             continue
 
-        pairs, skip_stats = align_lines(arap_lines, latin_lines)
+        split_lat: list[str] = []
+        for line in raw_latin:
+            split_lat.extend(split_sentences(line))
+        split_lat = [s for s in split_lat if s.strip()]
+
+        pairs, skip_stats = align_lines(split_arap, split_lat)
         total_skipped_arap += skip_stats["atlanan_arap"]
         total_skipped_latin += skip_stats["atlanan_latin"]
 
@@ -582,6 +935,8 @@ def main() -> None:
                 {
                     "kaynak": "wikisource+vikikaynak",
                     "pageid": pid,
+                    "yontem": pinfo["yontem"],
+                    "kapsama": pinfo["kapsama"],
                     "baslik_arap": arap_title,
                     "tr_baslik": tr_title,
                     "arap": pair["arap"],

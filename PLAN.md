@@ -7,9 +7,9 @@ Boru hattı: Görüntü → [OCR] → Arap harfli Osmanlıca → [Çeviriyazı] 
 ## A. Veri
 - [x] 00  Kurulum + normalize.py
 - [x] 01  Toplayıcılar: wiktionary (9.9 bin), gazetteer (22 bin, CC BY-NC), wikisource (2.5 bin satır)
-- [ ] 02  Temizlik + yer adı okunuş seçimi + Vikikaynak (tr) Latin metinleriyle satır hizalama
-- [ ] 03  LATOC (13 milyon kelime, Latin) + Internet Archive'dan kamu malı Osmanlıca taramalar
-- [ ] 04  Altın test seti araçları (hizalanmış Vikikaynak + elle kontrol). Test seti eğitimde HİÇ kullanılmaz.
+- [x] 02  Temizlik + yer adı okunuş seçimi + Vikikaynak (tr) hizalama v1 (15 sayfa, 380 güvenilir çift)
+- [ ] 03  Hizalama v2 (cümle bölme, aday başlık araması) + altın dev/test seti + sızıntı koruması
+- [ ] 04  LATOC (13 milyon kelime, Latin) + Internet Archive'dan kamu malı Osmanlıca taramalar
 
 ## B. Çeviriyazı (Arap → Latin)
 - [ ] 05  Değerlendirme altyapısı (CER, WER, chrF) + kural/sözlük tabanlı basit çözüm

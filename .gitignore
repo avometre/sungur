@@ -23,7 +23,8 @@ wandb/
 data/**
 !data/**/
 !data/**/.gitkeep
-!data/gold/*.csv
+!data/gold/ws_title_map.csv
+!data/gold/README.md
 
 models/**
 !models/**/
@@ -38,3 +39,4 @@ checkpoints/
 .idea/
 .DS_Store
 Thumbs.db
+.agents/

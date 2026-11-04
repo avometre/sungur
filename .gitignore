@@ -1,0 +1,39 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Testing & Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Notebooks & Experiment tracking
+.ipynb_checkpoints/
+wandb/
+
+# Data & Models (keep directory structures via .gitkeep)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+models/**
+!models/**/
+!models/.gitkeep
+
+*.pt
+*.safetensors
+checkpoints/
+
+# OS / Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,4 +1,9 @@
 import sys
+import warnings
+
+# PyTorch numpy bulunmadığında internal UserWarning vermesin diye filtreliyoruz
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import torch
 
 

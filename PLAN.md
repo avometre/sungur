@@ -8,8 +8,10 @@ Boru hattı: Görüntü → [OCR] → Arap harfli Osmanlıca → [Çeviriyazı] 
 - [x] 00  Kurulum + normalize.py
 - [x] 01  Toplayıcılar: wiktionary (9.9 bin), gazetteer (22 bin, CC BY-NC), wikisource (2.5 bin satır)
 - [x] 02  Temizlik + yer adı okunuş seçimi + Vikikaynak (tr) hizalama v1 (15 sayfa, 380 güvenilir çift)
-- [ ] 03  Hizalama v2 (cümle bölme, aday başlık araması) + altın dev/test seti + sızıntı koruması
-- [ ] 04  LATOC (13 milyon kelime, Latin) + Internet Archive'dan kamu malı Osmanlıca taramalar
+- [x] 03  Hizalama v2: 33 sayfa, 1.343 çift (dev 7 sayfa / test 26 sayfa) + sızıntı koruması
+- [ ] 04  Altın set eşiği 0.75 (ölçümle belirlendi) + LATOC + Internet Archive kataloğu
+- Not: Altın setteki Latin metinlerin bir kısmı sadeleştirilmiş baskılardan alınmış (ör. "uzaklarda" → "uzaktan").
+  Bu yüzden test sonuçları sayfa bazında da raporlanacak; en güvenilir ölçü chrF olacak.
 
 ## B. Çeviriyazı (Arap → Latin)
 - [ ] 05  Değerlendirme altyapısı (CER, WER, chrF) + kural/sözlük tabanlı basit çözüm

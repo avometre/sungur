@@ -34,6 +34,9 @@ models/**
 *.safetensors
 checkpoints/
 
+# Third party tools & corpora
+third_party/
+
 # OS / Editor
 .vscode/
 .idea/

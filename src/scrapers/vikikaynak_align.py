@@ -146,21 +146,24 @@ def clean_latin_html(html_content: str) -> list[str]:
     return lines
 
 
-def split_sentences(text: str) -> list[str]:
-    """120 karakterden uzun satırları cümle sonu noktalama işaretlerinden böler.
+def split_sentences(text: str, min_len: int = 120) -> list[str]:
+    """Belirtilen karakter uzunluğundan (varsayılan 120) uzun satırları cümle sonu noktalama işaretlerinden böler.
 
     Kurallar:
     - Boş metinler için boş liste döner.
-    - 120 karakter veya daha kısa satırlara dokunmaz (şiir mısralarını korur).
-    - 120 karakterden uzun satırları '. ', '! ', '? ', ': ', '; ', '… ' ve Arapça '؟ ', '؛ ', '۔ ' işaretlerinden böler.
+    - min_len > 0 ve satır uzunluğu min_len veya daha kısa ise dokunmaz (şiir mısralarını korur).
+    - min_len=0 verildiğinde uzunluk kısıtı olmadan tüm noktalama işaretlerinden böler.
+    - min_len sınırını aşan satırları '. ', '! ', '? ', ': ', '; ', '… ' ve Arapça '؟ ', '؛ ', '۔ ' işaretlerinden böler.
     - Tırnak/ayraç içinde biten cümleleri korur (ör. '"Vatan sağ olsun!" Sonra...').
     - '...' üç noktayı tek işaret sayar (içinden bölmez).
     - Tek harf + nokta kısaltmalarını (ör. 'M. Kemal', 'M. A. Ersoy', 'م. Ali') korur.
     - Noktalama içermeyen uzun satırları bölmeden tek parça olarak döner.
     """
     s = text.strip()
-    if not s or len(s) <= 120:
-        return [s] if s else []
+    if not s:
+        return []
+    if min_len > 0 and len(s) <= min_len:
+        return [s]
 
     parts = [p.strip() for p in SPLIT_SENTENCE_PATTERN.split(s) if p.strip()]
     return parts if parts else [s]

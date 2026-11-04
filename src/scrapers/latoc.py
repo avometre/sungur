@@ -56,6 +56,8 @@ HEADERS = {
 # Türkçe harfler + â î û ê ô Â Î Û Ê Ô + ā ī ū ō Ā Ī Ū Ō +
 # ḳ Ḳ ġ Ġ ḥ Ḥ ḫ Ḫ ṣ Ṣ ṭ Ṭ ż Ż ẓ Ẓ ẕ Ẕ ḍ Ḍ ñ Ñ ʿ ʾ +
 # s̱ / S̱ için \u0331 (combining macron below) + noktalama + rakam + boşluk
+IJMES_SPECIAL_LETTERS: Set[str] = set("āīūōḳġḥḫṣṭżẓẕḍñʿʾĀĪŪŌḲĠḤḪṢṬŻẒẔḌÑ")
+
 IJMES_LETTERS = set(
     "abcçdefgğhıijklmnoöprsştuüvyz"
     "ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ"
@@ -130,6 +132,26 @@ def disallowed_char_ratio(text: str) -> float:
 def is_valid_ijmes_sentence(text: str, max_disallowed_ratio: float = 0.02) -> bool:
     """Cümle düzeyinde izinli olmayan karakter oranının eşiği (varsayılan: %2) aşmadığını denetler."""
     return disallowed_char_ratio(text) <= max_disallowed_ratio
+
+
+def is_apparatus_line(text: str) -> bool:
+    """Nüsha/aparat satırlarını tespit eder (harf olmayan ve tek harfli belirteç oranı > %50).
+
+    Örnek: 'U 3 M 90b', 'aḥkem S 2 Evvel ü:'
+    """
+    tokens = [t for t in re.split(r"\s+", text.strip()) if t]
+    if not tokens:
+        return True
+    bad = sum(1 for t in tokens if sum(1 for c in t if c.isalpha()) <= 1)
+    return (bad / len(tokens)) > 0.50
+
+
+def is_editor_prose_translation(text: str) -> bool:
+    """Editörün bugünkü Türkçe nesir çevirilerini tespit eder:
+    8+ kelimelik ve hiç IJMES özel harfi içermeyen cümleler.
+    """
+    words = [w for w in re.split(r"\s+", text.strip()) if w]
+    return len(words) >= 8 and not any(c in IJMES_SPECIAL_LETTERS for c in text)
 
 
 def load_latoc_metadata(
@@ -368,6 +390,7 @@ def convert_xml_to_sentences(
     book_meta: Dict[str, Any],
     min_words: int = 3,
     max_words: int = 80,
+    discarded_details: Optional[Dict[str, List[str]]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """XML dosyasından cümleleri ayıklar, kelime filtresi ve cümle IJMES kalite kapısını uygular."""
     if not xml_path.exists():
@@ -418,6 +441,20 @@ def convert_xml_to_sentences(
                 )
                 if not is_valid:
                     discarded_count += 1
+                    continue
+
+                # Nüsha / aparat satırları (harf olmayan ve tek harfli belirteç oranı > %50)
+                if is_apparatus_line(s):
+                    discarded_count += 1
+                    if discarded_details is not None and "apparatus" in discarded_details:
+                        discarded_details["apparatus"].append(s)
+                    continue
+
+                # Editörün bugünkü Türkçe nesir çevirileri (8+ kelime ve hiç IJMES özel harfi içermeyen)
+                if is_editor_prose_translation(s):
+                    discarded_count += 1
+                    if discarded_details is not None and "editor_prose" in discarded_details:
+                        discarded_details["editor_prose"].append(s)
                     continue
 
                 # Cümle düzeyinde IJMES izinli olmayan karakter oranı denetimi (%2)
@@ -504,6 +541,10 @@ def run_latoc_pipeline(
     excluded_records: List[Dict[str, Any]] = []
     excluded_books: List[str] = []
     total_sentence_discarded = 0
+    total_apparatus_discarded = 0
+    total_editor_discarded = 0
+    apparatus_samples: List[str] = []
+    editor_samples: List[str] = []
 
     print("=" * 80)
     print("LATOC KİTAPLARI İŞLENİYOR (Orijinal Kurallar + IJMES Kalite Kapısı)")
@@ -551,9 +592,18 @@ def run_latoc_pipeline(
             exclude_pages=excl_pages,
         )
 
-        # XML -> Cümleler (cümle IJMES filtresi dahil)
-        sentences, discarded = convert_xml_to_sentences(xml_path, book)
+        # XML -> Cümleler (cümle IJMES, aparat ve editör çevirisi filtreleri dahil)
+        details: Dict[str, List[str]] = {"apparatus": [], "editor_prose": []}
+        sentences, discarded = convert_xml_to_sentences(
+            xml_path, book, discarded_details=details
+        )
         total_sentence_discarded += discarded
+        total_apparatus_discarded += len(details["apparatus"])
+        total_editor_discarded += len(details["editor_prose"])
+        if len(apparatus_samples) < 5:
+            apparatus_samples.extend(details["apparatus"][: 5 - len(apparatus_samples)])
+        if len(editor_samples) < 5:
+            editor_samples.extend(details["editor_prose"][: 5 - len(editor_samples)])
 
         # Kalan cümlelerde kitap düzeyinde izinsiz karakter oranı (%0.5)
         combined_sentences_text = " ".join(r["latin"] for r in sentences)
@@ -600,6 +650,10 @@ def run_latoc_pipeline(
         "toplam_cumle": stats["toplam_cumle"],
         "toplam_kelime": stats["toplam_kelime"],
         "elenen_cumle": total_sentence_discarded,
+        "atilan_aparat_sayisi": total_apparatus_discarded,
+        "atilan_aparat_ornekler": apparatus_samples,
+        "atilan_editor_cevirisi_sayisi": total_editor_discarded,
+        "atilan_editor_ornekler": editor_samples,
         "yuzyil_dagilimi": stats["yuzyil_dagilimi"],
         "en_sik_30_kelime": stats["en_sik_30_kelime"],
     }
@@ -627,6 +681,12 @@ def main() -> None:
     print(f"Toplam Cümle Sayısı       : {report['toplam_cumle']:,}")
     print(f"Toplam Kelime Sayısı      : {report['toplam_kelime']:,}")
     print(f"Elenen Cümle Sayısı       : {report['elenen_cumle']:,}")
+    print(f"  - Atılan Aparat/Nüsha   : {report['atilan_aparat_sayisi']:,}")
+    for idx, s in enumerate(report["atilan_aparat_ornekler"], 1):
+        print(f"      {idx}. [Aparat] {s}")
+    print(f"  - Atılan Editör Çevirisi: {report['atilan_editor_cevirisi_sayisi']:,}")
+    for idx, s in enumerate(report["atilan_editor_ornekler"], 1):
+        print(f"      {idx}. [Editör] {s}")
     print("-" * 80)
     print("En Sık 30 Kelime:")
     words_fmt = ", ".join(f"{w} ({c:,})" for w, c in report["en_sik_30_kelime"])

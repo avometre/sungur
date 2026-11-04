@@ -4,10 +4,13 @@ Bu modül:
 1. Türkçe Vikikaynak dump dosyasını (trwikisource-latest-pages-articles.xml.bz2) akış halinde okur.
 2. Sadece ana ad alanındaki (ns=0) ve yönlendirme olmayan sayfaları inceler.
 3. 1928 öncesi Osmanlı dönemi eserlerini (yazar ölüm yılı <= 1950, eser yılı <= 1928 veya dönem kategorileri) seçer.
-4. Çeviri eserleri ve yabancı yazarları ayıklar.
-5. mwparserfromhell ile wikitext'i temizler, <poem> bloklarını satır satır korur.
-6. Altın dev/test seti ile veri sızıntısını (başlık, sayfa kimliği ve Latin cümle düzeyinde) kesin olarak önler.
-7. Çıktıyı data/interim/vikikaynak_latin.jsonl dosyasına yazar.
+4. Osmanlıca OLMAYAN dilleri (Çağatayca, Karahanlıca, Kazakça vb.) ve çevirileri ayıklar.
+5. Sadeleştirilmiş Atatürk TBMM/kongre konuşmalarını ve Nutuk bölümlerini çeviriyazı derlemine koymaz;
+   data/interim/vikikaynak_sadelestirilmis.jsonl dosyasına ayrı olarak yazar.
+6. Şiir satırlarındaki mısra/beyit numaralarını ("123. ", "1920 ") temizler.
+7. mwparserfromhell ile wikitext'i temizler, <poem> bloklarını satır satır korur.
+8. Altın dev/test seti ile veri sızıntısını (başlık, sayfa kimliği ve Latin cümle düzeyinde) kesin olarak önler.
+9. Çıktıyı data/interim/vikikaynak_latin.jsonl dosyasına yazar.
 """
 
 import argparse
@@ -17,7 +20,6 @@ import logging
 import random
 import re
 import sys
-import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
@@ -36,6 +38,7 @@ DEFAULT_DUMP_URL = "https://dumps.wikimedia.org/trwikisource/latest/trwikisource
 DEFAULT_CACHE_DIR = Path("data/raw/_cache")
 DEFAULT_DUMP_PATH = DEFAULT_CACHE_DIR / "trwikisource-latest-pages-articles.xml.bz2"
 DEFAULT_OUTPUT_JSONL = Path("data/interim/vikikaynak_latin.jsonl")
+DEFAULT_SIMPLIFIED_JSONL = Path("data/interim/vikikaynak_sadelestirilmis.jsonl")
 
 # Bilinen Türk/Osmanlı klasik yazarları (ölüm yılı <= 1950)
 KNOWN_TURKISH_AUTHORS_DEATH: Dict[str, int] = {
@@ -70,7 +73,6 @@ KNOWN_TURKISH_AUTHORS_DEATH: Dict[str, int] = {
     "nabi": 1712,
     "şeyh galip": 1799,
     "yunus emre": 1320,
-    "ahmed yesevi": 1166,
     "karacaoğlan": 1679,
     "pir sultan abdal": 1550,
     "kul himmet": 1584,
@@ -92,7 +94,6 @@ KNOWN_TURKISH_AUTHORS_DEATH: Dict[str, int] = {
     "üsküdarlı âşık dertli": 1846,
     "aşık dertli": 1846,
     "hoca dehhani": 1350,
-    "kadı burhaneddin": 1398,
     "şeyhî": 1431,
     "ahmed paşa": 1497,
     "necati": 1509,
@@ -103,6 +104,12 @@ KNOWN_TURKISH_AUTHORS_DEATH: Dict[str, int] = {
     "şeyhülislam yahya": 1644,
     "nâilî": 1666,
     "nevi-zade atayi": 1635,
+    "ahmedî": 1413,
+    "ahmedi": 1413,
+    "ziya paşa": 1880,
+    "sıdkı baba": 1928,
+    "kaytazzade mehmet nazım": 1924,
+    "mahmut esat bozkurt": 1943,
 }
 
 # Çeviri eserlerdeki yabancı yazarlar
@@ -136,6 +143,33 @@ KNOWN_FOREIGN_AUTHORS: Set[str] = {
     "lenin",
 }
 
+# Osmanlıca OLMAYAN dil ve dönem anahtar kelimeleri
+NON_OTTOMAN_LANGUAGES: Set[str] = {
+    "çağatay",
+    "cagatay",
+    "karahanlı",
+    "karahanli",
+    "kazak",
+    "kırgız",
+    "kirgiz",
+    "özbek",
+    "ozbek",
+    "azerbaycan",
+    "tatar",
+    "uygur",
+}
+
+# Doğrudan elenecek Osmanlıca olmayan yazarlar
+DISALLOWED_NON_OTTOMAN_AUTHORS: Set[str] = {
+    "ahmed yesevi",
+    "ahmet yesevi",
+    "kâşgarlı mahmud",
+    "kaşgarlı mahmud",
+    "kashgarlı mahmud",
+    "magcan cumabay",
+    "mağcan cumabay",
+}
+
 PERIOD_CATEGORIES: List[str] = [
     "osmanlı",
     "divan",
@@ -148,6 +182,34 @@ PERIOD_CATEGORIES: List[str] = [
     "millî edebiyat",
     "milli edebiyat",
 ]
+
+
+def is_simplified_title(title: str) -> bool:
+    """Atatürk'ün TBMM açılış konuşmaları, Nutuk ve kongre konuşmaları gibi sadeleştirilmiş başlıkları tespit eder."""
+    t_lower = title.lower()
+    if any(k in t_lower for k in ("konuşması", "konusmasi", "nutku", "kongresi")):
+        return True
+    if title.startswith("Nutuk/") or title == "Nutuk":
+        return True
+    return False
+
+
+def strip_verse_number(line: str) -> Tuple[str, bool]:
+    """Şiir satırının başındaki beyit/mısra numaralarını siler: '123. Zâtı...' -> 'Zâtı...'.
+
+    Eğer satır bir yılla başlıyorsa ('1920 senesinde') dokunmaz.
+    Dönen değer: (temizlenmiş_satır, degisti_mi)
+    """
+    # Yıl ile başlıyorsa dokunma
+    if re.match(r"^\d{4}\s+(?:senesinde|yılında|tarihinde)\b", line, re.I):
+        return line, False
+
+    m = re.match(r"^\d{1,4}\.?\s+(.*)$", line)
+    if m:
+        clean_text = m.group(1).strip()
+        if clean_text:
+            return clean_text, True
+    return line, False
 
 
 def load_author_deaths_from_dump(dump_path: Path) -> Dict[str, int]:
@@ -299,11 +361,20 @@ def is_target_period(
     year: Optional[int],
     author_deaths: Dict[str, int],
 ) -> Tuple[bool, str]:
-    """Sayfanın 1928 öncesi hedef dönem eseri olup olmadığını belirler."""
+    """Sayfanın 1928 öncesi hedef Osmanlı dönemi eseri olup olmadığını belirler."""
     author_l = author.lower()
     cats_lower = [c.lower() for c in categories]
 
-    # Yabancı yazar kontrolü
+    # 1. Doğrudan elenecek Osmanlıca olmayan yazarlar
+    if any(da in author_l for da in DISALLOWED_NON_OTTOMAN_AUTHORS):
+        return False, "osmanlica_olmayan_yazar"
+
+    # 2. Osmanlıca olmayan dil / dönem kategorileri
+    for cat in cats_lower:
+        if any(non_ot in cat for non_ot in NON_OTTOMAN_LANGUAGES):
+            return False, "osmanlica_olmayan_dil_kategorisi"
+
+    # 3. Yabancı yazar kontrolü
     if any(fa in author_l for fa in KNOWN_FOREIGN_AUTHORS):
         return False, "yabanci_yazar"
 
@@ -311,7 +382,7 @@ def is_target_period(
     if year is not None and 1000 <= year <= 1928:
         return True, f"eser_yili_{year}"
 
-    # Kural 2: Bilinen Türk yazarlar veya Kişi ölüm yılı <= 1950
+    # Kural 2: Bilinen Türk/Osmanlı yazarlar veya Kişi ölüm yılı <= 1950
     # (Orhan Veli ve Âşık Veysel gibi modern cumhuriyet yazarları hariç)
     if author_l:
         if (
@@ -340,10 +411,11 @@ def is_target_period(
 def run_vikikaynak_latin_pipeline(
     dump_path: Path = DEFAULT_DUMP_PATH,
     output_jsonl: Path = DEFAULT_OUTPUT_JSONL,
+    simplified_output_jsonl: Path = DEFAULT_SIMPLIFIED_JSONL,
     min_words: int = 3,
     max_words: int = 80,
 ) -> Dict[str, Any]:
-    """Vikikaynak Latin derlemini oluşturur ve sızıntı korumasını uygular."""
+    """Vikikaynak Latin derlemini oluşturur, temizler ve sızıntı korumasını uygular."""
     if not dump_path.exists():
         raise FileNotFoundError(f"Döküm dosyası bulunamadı: {dump_path}")
 
@@ -362,8 +434,14 @@ def run_vikikaynak_latin_pipeline(
     leaked_pages_count = 0
     leaked_sentences_count = 0
     discarded_translation_count = 0
+    discarded_non_ottoman_count = 0
+    verse_numbers_stripped_count = 0
+    excluded_non_ottoman_authors: Set[str] = set()
 
     all_records: List[Dict[str, Any]] = []
+    simplified_records: List[Dict[str, Any]] = []
+    simplified_pages_set: Set[str] = set()
+
     author_sentence_counter: Counter = Counter()
     total_words = 0
 
@@ -404,15 +482,22 @@ def run_vikikaynak_latin_pipeline(
                         continue
 
                     author, year = extract_metadata(wikitext)
-                    is_target, _ = is_target_period(
+                    is_target, reason = is_target_period(
                         wikitext, categories, author, year, author_deaths
                     )
 
                     if not is_target:
+                        if "osmanlica_olmayan" in reason:
+                            discarded_non_ottoman_count += 1
+                            if author:
+                                excluded_non_ottoman_authors.add(author)
                         elem.clear()
                         continue
 
                     selected_pages_count += 1
+                    is_simplified = is_simplified_title(title)
+                    if is_simplified:
+                        simplified_pages_set.add(title)
 
                     # Metin temizleme
                     cleaned_segments = clean_wikitext_content(wikitext)
@@ -420,7 +505,11 @@ def run_vikikaynak_latin_pipeline(
 
                     for kind, seg_text in cleaned_segments:
                         if kind == "poem":
-                            cands = [seg_text]
+                            # Mısra/beyit numaralarını sil ("123. ", "1920 ")
+                            clean_poem_line, stripped = strip_verse_number(seg_text)
+                            if stripped:
+                                verse_numbers_stripped_count += 1
+                            cands = [clean_poem_line]
                         else:
                             cands = split_sentences(seg_text, min_len=0)
 
@@ -439,7 +528,7 @@ def run_vikikaynak_latin_pipeline(
                             if not latin:
                                 continue
 
-                            # Cümle düzeyinde sızıntı kontrolü (altın dev/test seti ile birebir çakışma)
+                            # Cümle düzeyinde sızıntı kontrolü
                             if leak_checker.is_latin_heldout(latin):
                                 leaked_sentences_count += 1
                                 continue
@@ -452,24 +541,37 @@ def run_vikikaynak_latin_pipeline(
                                 "yil": year,
                                 "latin": latin,
                                 "latin_sade": latin_sade,
-                                "uslup": "vikikaynak",
+                                "uslup": "sadelestirilmis" if is_simplified else "vikikaynak",
                             }
-                            all_records.append(record)
-                            author_sentence_counter[record["yazar"]] += 1
-                            total_words += len(words)
+
+                            if is_simplified:
+                                simplified_records.append(record)
+                            else:
+                                all_records.append(record)
+                                author_sentence_counter[record["yazar"]] += 1
+                                total_words += len(words)
+
                             sira += 1
 
                 elem.clear()
 
-    # Çıktı dosyasını yaz
+    # 1. Çeviriyazı derlemini yaz
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(output_jsonl, all_records)
+
+    # 2. Sadeleştirilmiş konuşma/Nutuk derlemini ayrı dosyaya yaz
+    if simplified_records:
+        simplified_output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        write_jsonl(simplified_output_jsonl, simplified_records)
 
     # Örnek 10 cümle (seed=3)
     rng = random.Random(3)
     sample_10 = (
         rng.sample(all_records, min(10, len(all_records))) if all_records else []
     )
+
+    # Sadeleştirilmiş metinlerden 3 örnek cümle
+    sample_3_simplified = simplified_records[:3] if simplified_records else []
 
     summary = {
         "dokum_boyutu_mb": round(dump_size_bytes / (1024 * 1024), 2),
@@ -480,6 +582,12 @@ def run_vikikaynak_latin_pipeline(
         "sizinti_sayfa_sayisi": leaked_pages_count,
         "sizinti_cumle_sayisi": leaked_sentences_count,
         "atilan_ceviri_sayisi": discarded_translation_count,
+        "atilan_osmanlica_olmayan_sayfa": discarded_non_ottoman_count,
+        "haric_tutulan_yazarlar": sorted(list(excluded_non_ottoman_authors)),
+        "sadelestirilmis_sayfa_sayisi": len(simplified_pages_set),
+        "sadelestirilmis_cumle_sayisi": len(simplified_records),
+        "sadelestirilmis_ornek_3": sample_3_simplified,
+        "misra_numarasi_silinen_satir": verse_numbers_stripped_count,
         "en_cok_cumle_veren_20_yazar": author_sentence_counter.most_common(20),
         "ornek_10_cumle": sample_10,
     }
@@ -505,23 +613,33 @@ def main() -> None:
         default=DEFAULT_OUTPUT_JSONL,
         help="Çıktı JSONL dosya yolu",
     )
+    parser.add_argument(
+        "--simplified-file",
+        type=Path,
+        default=DEFAULT_SIMPLIFIED_JSONL,
+        help="Sadeleştirilmiş konuşma/Nutuk çıktı JSONL dosya yolu",
+    )
     args = parser.parse_args()
 
     print("=" * 80)
-    print("VİKİKAYNAK LATİN DERLEMİ ÇIKARIMI (vikikaynak_latin)")
+    print("VİKİKAYNAK LATİN DERLEMİ ÇIKARIMI VE TEMİZLİĞİ")
     print("=" * 80)
 
     summary = run_vikikaynak_latin_pipeline(
         dump_path=args.dump_file,
         output_jsonl=args.output_file,
+        simplified_output_jsonl=args.simplified_file,
     )
 
     print("-" * 80)
     print(f"Döküm Boyutu (MB)            : {summary['dokum_boyutu_mb']} MB")
     print(f"Taranan Sayfa Sayısı         : {summary['taranan_sayfa_sayisi']}")
     print(f"Seçilen Sayfa Sayısı         : {summary['secilen_sayfa_sayisi']}")
-    print(f"Toplam Cümle Sayısı          : {summary['toplam_cumle_sayisi']:,}")
-    print(f"Toplam Kelime Sayısı         : {summary['toplam_kelime_sayisi']:,}")
+    print(f"Toplam Çeviriyazı Cümle      : {summary['toplam_cumle_sayisi']:,}")
+    print(f"Toplam Çeviriyazı Kelime     : {summary['toplam_kelime_sayisi']:,}")
+    print(f"Hariç Tutulan Yazarlar       : {summary['haric_tutulan_yazarlar']}")
+    print(f"Sadeleştirilmiş Sayfa Sayısı : {summary['sadelestirilmis_sayfa_sayisi']} ({summary['sadelestirilmis_cumle_sayisi']:,} cümle)")
+    print(f"Mısra No Temizlenen Satır    : {summary['misra_numarasi_silinen_satir']:,}")
     print(f"Sızıntı Nedeniyle Atılan Sayfa: {summary['sizinti_sayfa_sayisi']}")
     print(f"Sızıntı Nedeniyle Atılan Cümle: {summary['sizinti_cumle_sayisi']}")
     print(f"Atılan Çeviri Sayfa          : {summary['atilan_ceviri_sayisi']}")
@@ -530,7 +648,11 @@ def main() -> None:
     for auth, cnt in summary["en_cok_cumle_veren_20_yazar"]:
         print(f"  - {auth:<35}: {cnt:,} cümle")
     print("-" * 80)
-    print("Rastgele 10 Cümle (seed=3):")
+    print("Sadeleştirilmiş Metinlerden 3 Örnek Cümle:")
+    for idx, s in enumerate(summary["sadelestirilmis_ornek_3"], 1):
+        print(f"{idx}. [{s['baslik']}] {s['latin']}")
+    print("-" * 80)
+    print("Rastgele 10 Çeviriyazı Cümlesi (seed=3):")
     for idx, s in enumerate(summary["ornek_10_cumle"], 1):
         print(f"{idx}. [{s['id']} | {s['baslik']} | Yazar: {s['yazar']}]")
         print(f"   Latin: {s['latin']}")

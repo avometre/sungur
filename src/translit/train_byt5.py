@@ -40,6 +40,12 @@ from transformers import (
 from src.common.io import read_jsonl
 from src.common.normalize import normalize_latin, normalize_ottoman
 from src.eval.metrics import normalize_eval_text
+from src.translit.decode import (
+    clean_fallback,
+    compute_output_limit,
+    is_degenerate,
+    truncate_to_limit,
+)
 
 print = functools.partial(print, flush=True)
 
@@ -269,25 +275,35 @@ def evaluate_model(
                 return_tensors="pt",
             ).to(device)
 
+            if direction == "ileri":
+                limits = [compute_output_limit(s) for s in srcs]
+                max_gen_len = max(limits)
+            else:
+                limits = [max_len] * len(srcs)
+                max_gen_len = max_len
+
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 outputs = model.generate(
                     inputs["input_ids"],
-                    max_length=max_len,
+                    max_length=max_gen_len,
                     num_beams=1,
                     do_sample=False,
                 )
 
             decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-            for ref, hyp in zip(refs, decoded):
+            for ref, hyp, lim in zip(refs, decoded, limits):
                 if direction == "ters":
                     # Arapça için normalize_ottoman ile kıyasla
                     ref_norm = normalize_ottoman(ref).strip()
                     hyp_norm = normalize_ottoman(hyp).strip()
                 else:
-                    # Latin için sadeleştirilmiş değerlendirme normalizasyonu
+                    # Uzunluk sınırı ve bozulma koruması
+                    hyp_clean = truncate_to_limit(hyp.strip(), lim)
+                    if is_degenerate(hyp_clean, lim):
+                        hyp_clean = clean_fallback(hyp_clean, lim)
                     ref_norm = normalize_eval_text(ref, mode="sade")
-                    hyp_norm = normalize_eval_text(hyp, mode="sade")
+                    hyp_norm = normalize_eval_text(hyp_clean, mode="sade")
 
                 all_refs.append(ref_norm)
                 all_hyps.append(hyp_norm)

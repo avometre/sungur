@@ -27,6 +27,13 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from src.common.io import read_jsonl, write_jsonl
 from src.common.normalize import normalize_latin, normalize_ottoman
 from src.eval.run_eval import print_score_table, run_evaluation
+from src.translit.decode import (
+    DEFAULT_NO_REPEAT_NGRAM_SIZE,
+    compute_output_limit,
+    generate_with_guard,
+    is_degenerate,
+    truncate_to_limit,
+)
 
 print = functools.partial(print, flush=True)
 
@@ -63,95 +70,86 @@ class SungurTransliterator:
         text: str,
         prefix: str = "<vk> ",
         beam_size: int = 4,
-        max_length: int = 512,
+        no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE,
     ) -> str:
-        """Tek bir Arapça cümleyi Latin harflerine çevirir."""
+        """Tek bir Arapça cümleyi korumalı olarak Latin harflerine çevirir."""
         clean_text = normalize_ottoman(text).strip()
         if not clean_text:
             return ""
 
-        prompt = f"{prefix}{clean_text}"
-        inputs = self.tokenizer(
-            [prompt],
-            max_length=max_length,
-            truncation=True,
-            return_tensors="pt",
-        ).to(self.device)
-
-        with torch.no_grad():
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                outputs = self.model.generate(
-                    inputs["input_ids"],
-                    max_length=max_length,
-                    num_beams=beam_size,
-                    do_sample=False,
-                )
-
-        decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return normalize_latin(decoded).strip()
+        res, _ = generate_with_guard(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            sentences=[clean_text],
+            prefix=prefix,
+            beam_size=beam_size,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            device=self.device,
+            batch_size=1,
+            apply_retry=True,
+            apply_limit=True,
+        )
+        return normalize_latin(res[0]).strip()
 
     def transliterate_batch(
         self,
         sentences: List[str],
         prefix: str = "<vk> ",
         beam_size: int = 4,
-        max_length: int = 512,
-        batch_size: int = 32,
+        batch_size: int = 16,
+        no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE,
+        apply_retry: bool = True,
+        apply_limit: bool = True,
     ) -> List[str]:
-        """Cümle listesini toplu halde verimli biçimde çevirir."""
-        results = []
-        for i in range(0, len(sentences), batch_size):
-            chunk = sentences[i : i + batch_size]
-            prompts = [f"{prefix}{normalize_ottoman(s).strip()}" for s in chunk]
-
-            inputs = self.tokenizer(
-                prompts,
-                max_length=max_length,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-            ).to(self.device)
-
-            with torch.no_grad():
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                    outputs = self.model.generate(
-                        inputs["input_ids"],
-                        max_length=max_length,
-                        num_beams=beam_size,
-                        do_sample=False,
-                    )
-
-            decoded = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-            for d in decoded:
-                results.append(normalize_latin(d).strip())
-
-        return results
+        """Cümle listesini uzunluk sınırı ve tekrar korumasıyla toplu halde çevirir."""
+        res, _ = generate_with_guard(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            sentences=sentences,
+            prefix=prefix,
+            beam_size=beam_size,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            device=self.device,
+            batch_size=batch_size,
+            apply_retry=apply_retry,
+            apply_limit=apply_limit,
+        )
+        return [normalize_latin(s).strip() for s in res]
 
     def transliterate_text(
         self,
         text: str,
         prefix: str = "<vk> ",
         beam_size: int = 4,
+        no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE,
     ) -> str:
         """Çok satırlı serbest metni satır satır çevirir."""
         lines = text.splitlines()
-        translated_lines = self.transliterate_batch(lines, prefix=prefix, beam_size=beam_size)
+        translated_lines = self.transliterate_batch(
+            lines,
+            prefix=prefix,
+            beam_size=beam_size,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+        )
         return "\n".join(translated_lines)
 
 
 def run_evaluation_sungur(
     split: str,
     model_dir: Path = DEFAULT_MODEL_DIR,
+    system_name: str = "S1b_sungur_small_v1",
     beam_size: int = 4,
+    batch_size: int = 16,
+    no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE,
 ) -> Dict[str, Any]:
-    """Altın kümede modeli çalıştırır, data/eval/S1_sungur_small_v1 altına yazar ve değerlendirir."""
+    """Altın kümede modeli çalıştırır, data/eval/<system_name> altına yazar ve değerlendirir."""
     gold_path = Path(f"data/gold/translit_{split}.jsonl")
-    pred_dir = Path("data/eval/S1_sungur_small_v1")
+    pred_dir = Path(f"data/eval/{system_name}")
     pred_dir.mkdir(parents=True, exist_ok=True)
     pred_path = pred_dir / f"{split}.jsonl"
     skor_path = pred_dir / f"{split}_skor.json"
 
-    print(f"S1_sungur_small_v1 modeli yükleniyor ve {split.upper()} kümesi çevriliyor...")
+    print(f"{system_name} modeli yükleniyor ve {split.upper()} kümesi çevriliyor...")
     engine = SungurTransliterator(model_dir=model_dir)
 
     gold_records = list(read_jsonl(gold_path))
@@ -161,7 +159,8 @@ def run_evaluation_sungur(
         sentences,
         prefix="<vk> ",
         beam_size=beam_size,
-        batch_size=32,
+        batch_size=batch_size,
+        no_repeat_ngram_size=no_repeat_ngram_size,
     )
 
     pred_records = [
@@ -171,7 +170,7 @@ def run_evaluation_sungur(
     write_jsonl(pred_path, pred_records)
 
     eval_result = run_evaluation(
-        system_name="S1_sungur_small_v1",
+        system_name=system_name,
         split=split,
         gold_path=gold_path,
         pred_path=pred_path,
@@ -191,12 +190,22 @@ def main() -> None:
     parser.add_argument("-o", "--output", type=Path, default=None, help="Çıktı dosya yolu")
     parser.add_argument("--split", choices=["dev", "test", "both"], default=None, help="Değerlendirme kümesi")
     parser.add_argument("--beam-size", type=int, default=4, help="Beam arama genişliği")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch boyutu")
+    parser.add_argument("--system-name", default="S1b_sungur_small_v1", help="Değerlendirme sistem adı")
+    parser.add_argument("--no-repeat-ngram-size", type=int, default=DEFAULT_NO_REPEAT_NGRAM_SIZE, help="Tekrar koruması ngram boyutu")
     args = parser.parse_args()
 
     if args.split:
         splits = ["dev", "test"] if args.split == "both" else [args.split]
         for sp in splits:
-            res = run_evaluation_sungur(split=sp, model_dir=args.model, beam_size=args.beam_size)
+            res = run_evaluation_sungur(
+                split=sp,
+                model_dir=args.model,
+                system_name=args.system_name,
+                beam_size=args.beam_size,
+                batch_size=args.batch_size,
+                no_repeat_ngram_size=args.no_repeat_ngram_size,
+            )
             print_score_table(res)
         return
 

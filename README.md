@@ -1,4 +1,4 @@
-# osmanlica-ai
+# Sungur
 
 Osmanlı Türkçesi (Arap harfli) metin ve matbû/el yazması görüntüleri günümüz Türkçesine aktaran uçtan uca yapay zekâ boru hattı.
 

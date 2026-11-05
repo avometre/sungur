@@ -4,6 +4,7 @@ __pycache__/
 *.class
 *.so
 .Python
+*.log
 
 # Virtual Environment
 .venv/

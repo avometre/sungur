@@ -12,6 +12,7 @@ from typing import Optional, Set, Tuple
 
 DEFAULT_HELDOUT_PAGES = Path("data/gold/heldout_pages.txt")
 DEFAULT_HELDOUT_ARAP = Path("data/gold/heldout_arap.txt")
+DEFAULT_HELDOUT_LATIN = Path("data/gold/heldout_latin.txt")
 DEFAULT_PAGE_STYLE = Path("data/gold/page_style.csv")
 DEFAULT_GOLD_DEV = Path("data/gold/translit_dev.jsonl")
 DEFAULT_GOLD_TEST = Path("data/gold/translit_test.jsonl")
@@ -39,11 +40,20 @@ def load_heldout_titles(page_style_path: Optional[Path] = None) -> Set[str]:
 def load_heldout_latin(
     dev_path: Optional[Path] = None,
     test_path: Optional[Path] = None,
+    heldout_latin_path: Optional[Path] = None,
 ) -> Set[str]:
-    """Altın dev ve test setlerindeki tüm birebir Latin cümlelerini yükler."""
+    """Altın dev ve test setlerindeki ve heldout_latin.txt'deki tüm Latin cümlelerini yükler."""
     d_path = dev_path or DEFAULT_GOLD_DEV
     t_path = test_path or DEFAULT_GOLD_TEST
+    hl_path = heldout_latin_path or DEFAULT_HELDOUT_LATIN
     sentences: Set[str] = set()
+
+    if hl_path.exists():
+        with open(hl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    sentences.add(line)
 
     for p in (d_path, t_path):
         if p.exists():

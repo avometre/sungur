@@ -126,9 +126,84 @@ class AzraOCRRunner:
         prompt: str = "Görseldeki Osmanlıca metni transkribe et:",
         max_new_tokens: int = 512,
         use_dynamic_tokens: bool = False,
+        backend: str = "sirali",
+        batch_size: int = 16,
     ) -> List[str]:
-        """Görüntü listesi üzerinde çıkarım yapar."""
-        results: List[str] = []
+        """Görüntü listesi üzerinde çıkarım yapar.
+
+        backend='sirali' (varsayılan): Satır satır sıralı çıkarım yapar.
+        backend='batch': Toplu (batch_size=16) çıkarım yapar (padding_side='left').
+        """
+        if not images:
+            return []
+
+        if backend == "batch" and len(images) > 1:
+            orig_padding_side = self.processor.tokenizer.padding_side
+            self.processor.tokenizer.padding_side = "left"
+            results: List[str] = []
+            try:
+                for i in range(0, len(images), batch_size):
+                    chunk_imgs = images[i : i + batch_size]
+                    batch_messages = []
+                    chunk_tokens = []
+                    for img in chunk_imgs:
+                        p_img = resize_to_multiple_of_64(img.convert("RGB"))
+                        batch_messages.append([
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image", "image": p_img},
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ])
+                        w, h = img.size
+                        t = (
+                            compute_dynamic_max_tokens(w, h)
+                            if use_dynamic_tokens
+                            else max_new_tokens
+                        )
+                        chunk_tokens.append(t)
+
+                    max_chunk_tok = max(chunk_tokens)
+                    texts = [
+                        self.processor.apply_chat_template(
+                            msg, tokenize=False, add_generation_prompt=True
+                        )
+                        for msg in batch_messages
+                    ]
+                    image_inputs, _ = process_vision_info(batch_messages)
+                    inputs = self.processor(
+                        text=texts,
+                        images=image_inputs,
+                        padding=True,
+                        return_tensors="pt",
+                    ).to(self.device)
+
+                    with torch.inference_mode():
+                        generated_ids = self.model.generate(
+                            **inputs,
+                            max_new_tokens=max_chunk_tok,
+                            do_sample=False,
+                            repetition_penalty=1.2,
+                            no_repeat_ngram_size=3,
+                            pad_token_id=self.processor.tokenizer.pad_token_id,
+                            eos_token_id=self.processor.tokenizer.eos_token_id,
+                        )
+
+                    prompt_len = inputs["input_ids"].shape[1]
+                    out_ids = generated_ids[:, prompt_len:]
+                    decoded = self.processor.batch_decode(
+                        out_ids, skip_special_tokens=True
+                    )
+                    results.extend([d.strip() for d in decoded])
+            finally:
+                self.processor.tokenizer.padding_side = orig_padding_side
+
+            return results
+
+        # Varsayılan: sıralı çıkarım
+        results = []
         for img in images:
             w, h = img.size
             tokens = compute_dynamic_max_tokens(w, h) if use_dynamic_tokens else max_new_tokens

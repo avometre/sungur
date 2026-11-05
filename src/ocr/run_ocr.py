@@ -60,6 +60,7 @@ class EndToEndPipeline:
         self,
         image: Image.Image | str | Path,
         segmenter: str = "klasik",
+        backend: str = "sirali",
         prefix: str = "<vk> ",
     ) -> List[Tuple[Tuple[int, int, int, int], str, Optional[str]]]:
         """Sayfayı işler ve her satır için (kutu, arapca_metin, latin_metin) döndürür."""
@@ -76,7 +77,7 @@ class EndToEndPipeline:
 
         # 2. OCR Çıkarımı (Azra-1-Mini)
         raw_ocr_texts = self.ocr_runner.predict_batch(
-            line_images, use_dynamic_tokens=True
+            line_images, use_dynamic_tokens=True, backend=backend
         )
 
         # 3. Normalizasyon
@@ -118,6 +119,13 @@ def main() -> None:
         help="Satır bölütleme yöntemi (varsayılan: klasik)",
     )
     parser.add_argument(
+        "--backend",
+        type=str,
+        default="sirali",
+        choices=["sirali", "batch"],
+        help="Azra-1-Mini OCR çıkarım motoru: 'sirali' (varsayılan, Windows/WSL) veya 'batch' (hızlı toplu çıkarım, >=5 satır/sn)",
+    )
+    parser.add_argument(
         "--translit",
         type=str,
         default=None,
@@ -132,6 +140,7 @@ def main() -> None:
     results = pipeline.process_image(
         image=args.image,
         segmenter=args.segmenter,
+        backend=args.backend,
     )
 
     print("\n" + "=" * 80)

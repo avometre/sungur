@@ -55,3 +55,36 @@ def test_empty_page_returns_empty():
     page = Image.new("RGB", (400, 400), color=(255, 255, 255))
     results = segment_page_classical(page)
     assert len(results) == 0
+
+
+def test_two_column_segmentation_right_column_first():
+    """Yapay 2 sütunlu sayfada (her sütunda 4 satır) tam 8 satır bulduğunu
+    ve Osmanlıca sağdan sola okuma sırasına göre SAĞ sütunun önce geldiğini doğrular.
+    """
+    # Beyaz sayfa (800x600)
+    page = Image.new("RGB", (800, 600), color=(255, 255, 255))
+    draw = ImageDraw.Draw(page)
+
+    ys = [80, 180, 280, 380]
+
+    # Sağ sütun (x=460..740)
+    for y in ys:
+        draw.rectangle([460, y, 740, y + 25], fill=(0, 0, 0))
+
+    # Sol sütun (x=60..340)
+    for y in ys:
+        draw.rectangle([60, y, 340, y + 25], fill=(0, 0, 0))
+
+    results = segment_page_classical(page)
+
+    assert len(results) == 8, f"Beklenen 8 satır, bulunan: {len(results)}"
+
+    # İlk 4 satır SAĞ sütundan olmalıdır (x0 > 400)
+    for i in range(4):
+        box, _ = results[i]
+        assert box[0] >= 400, f"Satır {i} sağ sütunda olmalıydı fakat x0={box[0]}"
+
+    # Sonraki 4 satır SOL sütundan olmalıdır (x1 < 400)
+    for i in range(4, 8):
+        box, _ = results[i]
+        assert box[2] <= 400, f"Satır {i} sol sütunda olmalıydı fakat x1={box[2]}"

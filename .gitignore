@@ -7,6 +7,7 @@ __pycache__/
 
 # Virtual Environment
 .venv/
+.venv-ocr/
 venv/
 ENV/
 
@@ -37,6 +38,10 @@ checkpoints/
 
 # Third party tools & corpora
 third_party/
+
+# Scratch & OCR review artifacts
+scratch/
+logs/ocr_inceleme/*.png
 
 # OS / Editor
 .vscode/

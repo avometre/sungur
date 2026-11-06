@@ -63,7 +63,7 @@ Altın test seti: Osmanlıca Vikikaynak ↔ Türkçe Vikikaynak sayfalarından h
 
 - OCR: [Azra-1-Mini](https://huggingface.co/OttomanNLP/Azra-1-Mini-0.8b) + satır bölütleme (matbaa baskısında iyi, taş baskıda zayıf).
 - Sadeleştirme: henüz başlamadı.
-- Yol haritası ve ayrıntılar: [PLAN.md](PLAN.md). Görev metinleri: [prompts/](prompts/).
+- Yol haritası ve ayrıntılar: [PLAN.md](PLAN.md).
 
 ## Lisans
 

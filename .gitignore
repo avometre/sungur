@@ -50,3 +50,8 @@ logs/ocr_inceleme/*.png
 .DS_Store
 Thumbs.db
 .agents/
+# Yerel kalır, herkese açık repoya girmez
+prompts/
+logs/
+data/gold/*.csv
+data/gold/README.md

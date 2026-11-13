@@ -191,9 +191,10 @@ class BackTransliterator:
         if self.model is None and self.model_path and self.model_path.exists():
             print(f"Ters model yükleniyor: {self.model_path}")
             self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
+            dtype = torch.bfloat16 if torch.device(self.device).type == "cuda" else torch.float32
             self.model = AutoModelForSeq2SeqLM.from_pretrained(
                 str(self.model_path),
-                torch_dtype=torch.bfloat16,
+                torch_dtype=dtype,
             ).to(self.device)
             self.model.eval()
 
@@ -218,6 +219,7 @@ class BackTransliterator:
             return self.word_cache
 
         batch_size = 64
+        use_cuda_amp = torch.device(self.device).type == "cuda"
         for i in range(0, len(to_translate), batch_size):
             chunk = to_translate[i : i + batch_size]
             max_new = 3 * max(len(w.encode("utf-8")) for w in chunk) + 8
@@ -231,7 +233,7 @@ class BackTransliterator:
             ).to(self.device)
 
             with torch.no_grad():
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_cuda_amp):
                     outputs = self.model.generate(
                         inputs["input_ids"],
                         max_new_tokens=max_new,

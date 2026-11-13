@@ -410,7 +410,14 @@ def segment_page_classical(
 def _run_kraken_subprocess(image_path: Path) -> List[Tuple[int, int, int, int]]:
     """Ayrı .venv-ocr ortamında Kraken blla çalıştırarak satır sınırlarını alır."""
     project_root = Path(__file__).resolve().parent.parent.parent
-    ocr_python = project_root / ".venv-ocr" / "Scripts" / "python.exe"
+    win_python = project_root / ".venv-ocr" / "Scripts" / "python.exe"
+    unix_python = project_root / ".venv-ocr" / "bin" / "python"
+    if win_python.exists():
+        ocr_python = str(win_python)
+    elif unix_python.exists():
+        ocr_python = str(unix_python)
+    else:
+        ocr_python = sys.executable
 
     script = """
 import sys

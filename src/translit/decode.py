@@ -117,7 +117,7 @@ def generate_with_guard(
     prefix: str = "<vk> ",
     beam_size: int = 4,
     no_repeat_ngram_size: int = DEFAULT_NO_REPEAT_NGRAM_SIZE,
-    device: Optional[torch.device] = None,
+    device: Optional[torch.device | str] = None,
     batch_size: int = 16,
     apply_retry: bool = True,
     apply_limit: bool = True,
@@ -128,30 +128,34 @@ def generate_with_guard(
       (temizlenmiş_çıktılar, başlangıçta_bozuk_çıkan_satır_sayısı)
     """
     if device is None:
-        device = next(model.parameters()).device
+        resolved_device = next(model.parameters()).device
+    else:
+        resolved_device = torch.device(device)
+    use_cuda_amp = resolved_device.type == "cuda"
 
     results: List[str] = [""] * len(sentences)
+    normalized_inputs: List[str] = [normalize_ottoman(s).strip() for s in sentences]
+    non_empty_indices: List[int] = [i for i, s in enumerate(normalized_inputs) if s]
     limits: List[int] = [compute_output_limit(s) for s in sentences]
     degen_count = 0
 
-    # 1. Aşama: Standart üretim (veya uzunluk sınırlı üretim)
-    for start_idx in range(0, len(sentences), batch_size):
-        end_idx = min(start_idx + batch_size, len(sentences))
-        chunk_sentences = sentences[start_idx:end_idx]
-        chunk_limits = limits[start_idx:end_idx]
-        chunk_prompts = [f"{prefix}{normalize_ottoman(s).strip()}" for s in chunk_sentences]
+    # 1. Aşama: Standart üretim (yalnızca boş olmayan satırlar)
+    for start_idx in range(0, len(non_empty_indices), batch_size):
+        chunk_indices = non_empty_indices[start_idx : start_idx + batch_size]
+        chunk_limits = [limits[idx] for idx in chunk_indices]
+        chunk_prompts = [f"{prefix}{normalized_inputs[idx]}" for idx in chunk_indices]
 
         inputs = tokenizer(
             chunk_prompts,
             padding=True,
             truncation=True,
             return_tensors="pt",
-        ).to(device)
+        ).to(resolved_device)
 
         max_new_tok = max(chunk_limits) if apply_limit else 512
 
         with torch.no_grad():
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_cuda_amp):
                 outputs = model.generate(
                     inputs["input_ids"],
                     max_new_tokens=max_new_tok,
@@ -161,17 +165,16 @@ def generate_with_guard(
 
         decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-        for i, (dec, lim) in enumerate(zip(decoded, chunk_limits)):
-            global_idx = start_idx + i
+        for idx, dec, lim in zip(chunk_indices, decoded, chunk_limits):
             text = dec.strip()
             if apply_limit:
                 text = truncate_to_limit(text, lim)
-            results[global_idx] = text
+            results[idx] = text
 
     # 2. Aşama: Bozukluk tespiti ve yeniden deneme (sadece bozuk satırlar)
     degen_indices = []
-    for idx, (res, lim) in enumerate(zip(results, limits)):
-        if is_degenerate(res, lim):
+    for idx in non_empty_indices:
+        if is_degenerate(results[idx], limits[idx]):
             degen_indices.append(idx)
 
     degen_count = len(degen_indices)
@@ -180,7 +183,7 @@ def generate_with_guard(
         # Sadece bozuk çıkan satırları yeniden üret
         for chunk_start in range(0, len(degen_indices), batch_size):
             chunk_sub_indices = degen_indices[chunk_start : chunk_start + batch_size]
-            sub_prompts = [f"{prefix}{normalize_ottoman(sentences[idx]).strip()}" for idx in chunk_sub_indices]
+            sub_prompts = [f"{prefix}{normalized_inputs[idx]}" for idx in chunk_sub_indices]
             sub_limits = [limits[idx] for idx in chunk_sub_indices]
 
             inputs = tokenizer(
@@ -188,12 +191,12 @@ def generate_with_guard(
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
-            ).to(device)
+            ).to(resolved_device)
 
             max_new_tok = max(sub_limits) if apply_limit else 512
 
             with torch.no_grad():
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_cuda_amp):
                     retry_outputs = model.generate(
                         inputs["input_ids"],
                         max_new_tokens=max_new_tok,

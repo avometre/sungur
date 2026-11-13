@@ -282,7 +282,7 @@ def evaluate_model(
                 limits = [max_len] * len(srcs)
                 max_gen_len = max_len
 
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(device.type == "cuda")):
                 outputs = model.generate(
                     inputs["input_ids"],
                     max_length=max_gen_len,
@@ -314,6 +314,9 @@ def evaluate_model(
 
     if not all_refs:
         return 1.0
+
+    if all(r == "" for r in all_refs):
+        return 0.0 if all(h == "" for h in all_hyps) else 1.0
 
     try:
         cer_score = float(jiwer.cer(all_refs, all_hyps))
@@ -428,7 +431,7 @@ def train_byt5(
         step_done = 0
         for b_idx, batch in enumerate(dataloader):
             batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(device.type == "cuda")):
                 outputs = model(**batch)
                 loss = outputs.loss / gradient_accumulation_steps
 
@@ -484,7 +487,7 @@ def train_byt5(
         optimizer.zero_grad()
         for b_idx, batch in enumerate(dataloader):
             batch = {k: v.to(device) for k, v in batch.items()}
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(device.type == "cuda")):
                 outputs = model(**batch)
                 loss = outputs.loss / gradient_accumulation_steps
 

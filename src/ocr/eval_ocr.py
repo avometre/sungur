@@ -230,15 +230,21 @@ def calculate_ocr_metrics(references: List[str], hypotheses: List[str]) -> Dict[
         refs_nospace.append(nr.replace(" ", ""))
         hyps_nospace.append(nh.replace(" ", ""))
 
-    try:
-        cer_val = float(jiwer.cer(norm_refs, norm_hyps))
-    except Exception:
-        cer_val = 1.0
+    if all(r == "" for r in norm_refs):
+        cer_val = 0.0 if all(h == "" for h in norm_hyps) else 1.0
+    else:
+        try:
+            cer_val = float(jiwer.cer(norm_refs, norm_hyps))
+        except Exception:
+            cer_val = 1.0
 
-    try:
-        cer_nospace_val = float(jiwer.cer(refs_nospace, hyps_nospace))
-    except Exception:
-        cer_nospace_val = 1.0
+    if all(r == "" for r in refs_nospace):
+        cer_nospace_val = 0.0 if all(h == "" for h in hyps_nospace) else 1.0
+    else:
+        try:
+            cer_nospace_val = float(jiwer.cer(refs_nospace, hyps_nospace))
+        except Exception:
+            cer_nospace_val = 1.0
 
     return {
         "cer": round(cer_val, 4),
@@ -262,7 +268,11 @@ def evaluate_synthetic_dev(
     ]
     print(f"[EVAL] {len(records)} adet yapay satır değerlendiriliyor...")
 
-    images = [Image.open(r["goruntu"]) for r in records]
+    images: List[Image.Image] = []
+    for r in records:
+        with Image.open(r["goruntu"]) as im:
+            im.load()
+            images.append(im.copy())
     references = [r["metin"] for r in records]
 
     # 1. Ayar A: Sabit 512

@@ -59,9 +59,10 @@ class SungurTransliterator:
             raise FileNotFoundError(f"Model klasörü bulunamadı: {self.model_dir}")
 
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
+        dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
             str(self.model_dir),
-            torch_dtype=torch.bfloat16,
+            torch_dtype=dtype,
         ).to(self.device)
         self.model.eval()
 

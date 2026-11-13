@@ -73,16 +73,21 @@ def compute_metrics(references: List[str], hypotheses: List[str]) -> Dict[str, f
     tam_eslesme = exact_matches / len(references)
 
     # CER ve WER (jiwer)
-    # jiwer hem boş liste hem tekil eleman durumlarını yönetir
-    try:
-        cer_val = float(jiwer.cer(references, hypotheses))
-    except Exception:
-        cer_val = 1.0
+    # Tüm referanslar boşsa jiwer hata fırlatabilir; tüm tahminler de boşsa hata 0.0'dır
+    if all(r == "" for r in references):
+        empty_err = 0.0 if all(h == "" for h in hypotheses) else 1.0
+        cer_val = empty_err
+        wer_val = empty_err
+    else:
+        try:
+            cer_val = float(jiwer.cer(references, hypotheses))
+        except Exception:
+            cer_val = 1.0
 
-    try:
-        wer_val = float(jiwer.wer(references, hypotheses))
-    except Exception:
-        wer_val = 1.0
+        try:
+            wer_val = float(jiwer.wer(references, hypotheses))
+        except Exception:
+            wer_val = 1.0
 
     # chrF2 (sacrebleu)
     try:

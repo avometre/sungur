@@ -1,0 +1,1 @@
+"""Sungur uygulama paketi."""

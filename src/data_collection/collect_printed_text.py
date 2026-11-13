@@ -45,11 +45,22 @@ def fetch_book_data(book_filename: str) -> Dict[str, Any]:
     return json.loads(m.group(1))
 
 
-def process_books() -> List[Dict[str, Any]]:
+def fetch_all_book_filenames() -> List[str]:
+    """GitHub API üzerinden OttomanOCR-search/data altındaki tüm .js kitap dosyalarını listeler."""
+    url = "https://api.github.com/repos/Koras0ff/OttomanOCR-search/contents/data"
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+    resp.raise_for_status()
+    items = resp.json()
+    return sorted(x["name"] for x in items if isinstance(x, dict) and x.get("name", "").endswith(".js"))
+
+
+def process_books(book_filenames: List[str] | None = None, output_path: Path = INTERIM_OUTPUT) -> List[Dict[str, Any]]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    targets = book_filenames if book_filenames is not None else SAMPLE_BOOKS
     all_lines = []
 
-    for bname in SAMPLE_BOOKS:
+    for bname in targets:
         try:
             data = fetch_book_data(bname)
             book_id = data.get("id", bname)
@@ -101,21 +112,34 @@ def process_books() -> List[Dict[str, Any]]:
                     indent=2,
                 )
 
-            time.sleep(1.0)
+            time.sleep(0.2)
         except Exception as e:
             logger.error(f"Hata ({bname}): {e}")
 
-    # Örnek satırları interim'e yaz
-    with open(INTERIM_OUTPUT, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         for line in all_lines:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
-    logger.info(f"Toplam {len(all_lines)} satır çıkarıldı ve kaydedildi: {INTERIM_OUTPUT}")
+    logger.info(f"Toplam {len(all_lines)} satır çıkarıldı ve kaydedildi: {output_path}")
     return all_lines
 
 
 if __name__ == "__main__":
-    lines = process_books()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="OttomanOCR-search kitap metinlerini çeker.")
+    parser.add_argument("--all", action="store_true", help="5 örnek yerine tüm 60 kitabı indir")
+    parser.add_argument("--output", type=Path, default=None, help="Çıktı JSONL yolu")
+    args = parser.parse_args()
+
+    if args.all:
+        books = fetch_all_book_filenames()
+        out = args.output or Path("data/interim/ottoman_printed_all.jsonl")
+        lines = process_books(book_filenames=books, output_path=out)
+    else:
+        out = args.output or INTERIM_OUTPUT
+        lines = process_books(output_path=out)
+
     print(f"\n--- 20 ÖRNEK SATIR (Toplam {len(lines)} satır içinden) ---")
     for i, item in enumerate(lines[:20], 1):
         safe_txt = item["metin"].encode("ascii", "backslashreplace").decode("ascii")
